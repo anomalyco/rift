@@ -6,18 +6,26 @@ pub(crate) struct CopyFilter;
 
 impl CopyFilter {
     pub(crate) fn excludes(self, path: &Path) -> bool {
-        let parts = path
-            .components()
-            .filter_map(|component| match component {
-                Component::Normal(part) => Some(part),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let mut parts = path.components().filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        });
 
-        parts.iter().any(|part| excludes_component(part))
-            || parts
-                .windows(2)
-                .any(|parts| matches_yarn_artifact(parts[0], parts[1]))
+        let first = match parts.next() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        if excludes_component(first) {
+            return true;
+        }
+
+        let mut prev = first;
+        parts.any(|part| {
+            let result = excludes_component(part) || matches_yarn_artifact(prev, part);
+            prev = part;
+            result
+        })
     }
 }
 

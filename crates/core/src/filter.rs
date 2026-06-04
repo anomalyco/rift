@@ -30,31 +30,31 @@ impl CopyFilter {
 }
 
 fn excludes_component(part: &OsStr) -> bool {
-    [
-        "node_modules",
-        ".pnpm-store",
-        "target",
-        ".venv",
-        "venv",
-        ".tox",
-        ".nox",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".next",
-        ".nuxt",
-        ".svelte-kit",
-        ".turbo",
-        ".vite",
-        ".parcel-cache",
-        ".cache",
-        "dist",
-        "build",
-        "coverage",
-    ]
-    .into_iter()
-    .any(|excluded| part == excluded)
+    let Some(s) = part.to_str() else { return false };
+    matches!(
+        s,
+        "node_modules"
+            | "target"
+            | ".pnpm-store"
+            | ".venv"
+            | "venv"
+            | ".tox"
+            | ".nox"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | ".turbo"
+            | ".vite"
+            | ".parcel-cache"
+            | ".cache"
+            | "dist"
+            | "build"
+            | "coverage"
+    )
 }
 
 fn matches_yarn_artifact(first: &OsStr, second: &OsStr) -> bool {

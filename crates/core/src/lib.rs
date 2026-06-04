@@ -207,9 +207,6 @@ impl Manager {
             None => default_storage(&root.path)?,
         };
         let name = RiftName::from_optional(input.name)?;
-        if destination_parent.join(name.as_str()).starts_with(&from) {
-            return Err(Error::InsideSource(destination_parent.join(name.as_str())));
-        }
         fs::create_dir_all(&destination_parent)?;
         let destination_parent = fs::canonicalize(destination_parent)?;
         let destination = destination_parent.join(name.as_str());

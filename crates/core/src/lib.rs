@@ -59,7 +59,7 @@ pub enum Error {
     InsideSource(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
-    #[error("postcreate hook failed at {path}: `{command}` {message}")]
+    #[error("hook failed at {path}: `{command}` {message}")]
     HookFailed {
         path: PathBuf,
         command: String,
@@ -311,6 +311,19 @@ impl Manager {
             return self.unregister_root(&record);
         }
         marker::verify(&record.path, &record.id)?;
+        let config = config::Config::load(&record.path)?;
+        let parent_id = record.parent_id.as_ref().unwrap();
+        let parent = self
+            .registry
+            .record_id(parent_id)?
+            .ok_or_else(|| Error::NotManaged(record.path.clone()))?;
+        hook::run_postremove(
+            config.postremove(),
+            &parent.path,
+            &record.path,
+            &record.id,
+            parent_id,
+        )?;
         let rows = self
             .registry
             .subtree(&record.id, SubtreeScope::IncludingRoot)?;
@@ -321,6 +334,11 @@ impl Manager {
     pub fn remove_all(&mut self, at: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         let record = self.workspace_at(at)?;
         marker::verify(&record.path, &record.id)?;
+        // Postremove hooks are intentionally not run for bulk descendant removal —
+        // each descendant may have its own hooks, and running them during a
+        // recursive tear-down would require loading config per-child and handling
+        // partial failures across the subtree. Callers that need hook behaviour
+        // should remove descendants individually with remove() first.
         let rows = self
             .registry
             .subtree(&record.id, SubtreeScope::DescendantsOnly)?;

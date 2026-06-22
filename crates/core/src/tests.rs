@@ -1039,3 +1039,68 @@ fn run(path: &Path, args: &[&str]) {
             .success()
     );
 }
+
+#[test]
+fn postremove_runs_hooks_in_order_before_directory_is_moved() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager.create(create_input(source.clone(), "postremove-order")).unwrap();
+    // Write .rift.toml into the child (postremove config lives in the rift being removed)
+    fs::write(
+        child.join(".rift.toml"),
+        r#"
+version = 1
+
+[[hooks.postremove]]
+run = "echo first >> ../hook.log"
+
+[[hooks.postremove]]
+run = "echo second >> ../hook.log"
+"#,
+    )
+    .unwrap();
+    let log = child.parent().unwrap().join("hook.log");
+
+    manager.remove(&child).unwrap();
+
+    let contents = fs::read_to_string(&log).unwrap();
+    assert!(contents.find("first").unwrap() < contents.find("second").unwrap());
+    assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[test]
+fn postremove_failure_aborts_removal() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager.create(create_input(source.clone(), "postremove-failure")).unwrap();
+    fs::write(
+        child.join(".rift.toml"),
+        r#"
+version = 1
+
+[[hooks.postremove]]
+run = "echo before >> ../hook.log"
+
+[[hooks.postremove]]
+run = "exit 7"
+
+[[hooks.postremove]]
+run = "echo after >> ../hook.log"
+"#,
+    )
+    .unwrap();
+    let log = child.parent().unwrap().join("hook.log");
+
+    let error = manager.remove(&child).unwrap_err();
+
+    assert!(matches!(error, Error::HookFailed { path, .. } if path == child));
+    assert!(child.exists());
+    assert_eq!(manager.list(&source).unwrap(), vec![child.clone()]);
+    let contents = fs::read_to_string(&log).unwrap();
+    assert!(contents.contains("before"));
+    assert!(!contents.contains("after"));
+}

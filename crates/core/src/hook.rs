@@ -1,4 +1,4 @@
-use crate::config::Postcreate;
+use crate::config::{Postcreate, Postremove};
 use crate::id::RiftId;
 use crate::{Error, Result};
 use std::path::Path;
@@ -14,6 +14,19 @@ pub(crate) fn run_postcreate(
     steps
         .iter()
         .map(Postcreate::run)
+        .try_for_each(|command| run_step(command, source, destination, id, parent_id))
+}
+
+pub(crate) fn run_postremove(
+    steps: &[Postremove],
+    source: &Path,
+    destination: &Path,
+    id: &RiftId,
+    parent_id: &RiftId,
+) -> Result<()> {
+    steps
+        .iter()
+        .map(Postremove::run)
         .try_for_each(|command| run_step(command, source, destination, id, parent_id))
 }
 

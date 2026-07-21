@@ -58,7 +58,7 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
             } else {
                 clone_path_apfs(source, &destination)?;
             }
-            copy_metadata_apfs(source, &destination, MetadataTarget::FileOrDirectory)?;
+            copy_metadata_apfs(source, &destination, MetadataTarget::ClonedFile)?;
         } else if file_type.is_symlink() {
             std::os::unix::fs::symlink(fs::read_link(source)?, &destination)?;
             copy_metadata_apfs(source, &destination, MetadataTarget::Symlink)?;
@@ -67,9 +67,9 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
         }
     }
     for (source, destination) in directories.into_iter().rev() {
-        copy_metadata_apfs(&source, &destination, MetadataTarget::FileOrDirectory)?;
+        copy_metadata_apfs(&source, &destination, MetadataTarget::Directory)?;
     }
-    copy_metadata_apfs(from, to, MetadataTarget::FileOrDirectory)?;
+    copy_metadata_apfs(from, to, MetadataTarget::Directory)?;
     Ok(())
 }
 
@@ -96,7 +96,8 @@ fn clone_path_apfs(from: &Path, to: &Path) -> Result<()> {
 
 #[derive(Clone, Copy)]
 enum MetadataTarget {
-    FileOrDirectory,
+    ClonedFile,
+    Directory,
     Symlink,
 }
 
@@ -110,10 +111,14 @@ fn copy_metadata_apfs(from: &Path, to: &Path, target: MetadataTarget) -> Result<
     if unsafe { libc::lchown(destination.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    if matches!(target, MetadataTarget::FileOrDirectory) {
+    if !matches!(target, MetadataTarget::Symlink) {
         fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))?;
     }
-    copy_xattrs_apfs(from, to)?;
+    // clonefile already copied regular-file xattrs. Rewriting protected xattrs
+    // such as com.apple.provenance fails even when their values are unchanged.
+    if !matches!(target, MetadataTarget::ClonedFile) {
+        copy_xattrs_apfs(from, to)?;
+    }
     let times = [
         libc::timespec {
             tv_sec: metadata.atime(),

@@ -283,7 +283,50 @@ mod tests {
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o710)).unwrap();
         let file = nested.join("file.txt");
         fs::write(&file, "hello").unwrap();
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        let file_path = c_path(&file).unwrap();
+        let attribute = std::ffi::CString::new("com.rift.test").unwrap();
+        let attribute_value = b"preserved";
+        // SAFETY: the path and attribute are valid C strings, and the value
+        // pointer is valid for `attribute_value.len()` bytes.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    file_path.as_ptr(),
+                    attribute.as_ptr(),
+                    attribute_value.as_ptr().cast(),
+                    attribute_value.len(),
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        // The read-only mode makes a redundant xattr rewrite fail with EACCES,
+        // while the special bits verify clonefile's mode exception is repaired.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o6555)).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+            0o6555
+        );
+        // Confirm this fixture rejects the same setxattr operation the old
+        // metadata replay performed.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    file_path.as_ptr(),
+                    attribute.as_ptr(),
+                    attribute_value.as_ptr().cast(),
+                    attribute_value.len(),
+                    0,
+                    libc::XATTR_NOFOLLOW,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES)
+        );
         fs::hard_link(&file, nested.join("hard.txt")).unwrap();
         std::os::unix::fs::symlink("file.txt", nested.join("link.txt")).unwrap();
         fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
@@ -315,9 +358,25 @@ mod tests {
                 .unwrap()
                 .permissions()
                 .mode()
-                & 0o777,
-            0o640
+                & 0o7777,
+            0o6555
         );
+        let cloned_file = c_path(&destination.join("nested/file.txt")).unwrap();
+        let mut cloned_attribute = [0_u8; 9];
+        // SAFETY: the path and attribute are valid C strings, and the buffer
+        // pointer is valid for `cloned_attribute.len()` bytes.
+        let cloned_attribute_size = unsafe {
+            libc::getxattr(
+                cloned_file.as_ptr(),
+                attribute.as_ptr(),
+                cloned_attribute.as_mut_ptr().cast(),
+                cloned_attribute.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(cloned_attribute_size, attribute_value.len() as isize);
+        assert_eq!(&cloned_attribute, attribute_value);
         assert_eq!(
             fs::metadata(destination.join("nested"))
                 .unwrap()

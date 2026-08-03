@@ -104,20 +104,39 @@ enum MetadataTarget {
 fn copy_metadata_apfs(from: &Path, to: &Path, target: MetadataTarget) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let metadata = fs::symlink_metadata(from)?;
+    let metadata = fs::symlink_metadata(from).map_err(io_at("read metadata", from))?;
     let destination = c_path(to)?;
+
+    // `clonefile` reproduces ownership, timestamps, and extended attributes, so
+    // a cloned entry only needs its mode reapplied: the syscall drops setuid and
+    // setgid. Replaying the rest is redundant, and it fails outright on entries
+    // the caller cannot rewrite.
+    if matches!(target, MetadataTarget::ClonedFile) {
+        return fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))
+            .map_err(io_at("set permissions", to));
+    }
+
+    // Ownership is preserved on a best-effort basis. Only a privileged caller
+    // can assign a uid it does not own or a gid it does not belong to, and a
+    // copy owned by the caller is still a correct copy.
     // SAFETY: `destination` is a valid null-terminated path, and uid/gid come
     // from filesystem metadata for `from`.
     if unsafe { libc::lchown(destination.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+        let error = std::io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::EINVAL)
+        ) {
+            return Err(io_at("change ownership", to)(error));
+        }
     }
+    // Extended attributes must be copied before the mode is applied. `setxattr`
+    // requires write access, so a read-only entry would otherwise lock its own
+    // copy.
+    copy_xattrs_apfs(from, to)?;
     if !matches!(target, MetadataTarget::Symlink) {
-        fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))?;
-    }
-    // clonefile already copied regular-file xattrs. Rewriting protected xattrs
-    // such as com.apple.provenance fails even when their values are unchanged.
-    if !matches!(target, MetadataTarget::ClonedFile) {
-        copy_xattrs_apfs(from, to)?;
+        fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))
+            .map_err(io_at("set permissions", to))?;
     }
     let times = [
         libc::timespec {
@@ -140,7 +159,7 @@ fn copy_metadata_apfs(from: &Path, to: &Path, target: MetadataTarget) -> Result<
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(io_at("set timestamps", to)(std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -227,6 +246,15 @@ fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+fn io_at(operation: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> Error + use<> {
+    let path = path.to_path_buf();
+    move |source| Error::IoAt {
+        operation,
+        path,
+        source,
+    }
+}
+
 fn c_path(path: &Path) -> Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -274,6 +302,170 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+
+    fn nix_groups() -> Vec<u32> {
+        let mut groups = vec![0_u32; 64];
+        // SAFETY: the buffer is sized by `groups.len()` and valid for writes.
+        let count = unsafe { libc::getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        if count < 0 {
+            return Vec::new();
+        }
+        groups.truncate(count as usize);
+        groups
+    }
+
+    fn read_xattr(path: &Path, name: &str) -> Option<Vec<u8>> {
+        let path = c_path(path).unwrap();
+        let name = std::ffi::CString::new(name).unwrap();
+        // SAFETY: both C strings are live, and a null buffer asks for the size.
+        let size = unsafe {
+            libc::getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        if size < 0 {
+            return None;
+        }
+        let mut value = vec![0_u8; size as usize];
+        // SAFETY: `value` is sized by the probe above and valid for writes.
+        let read = unsafe {
+            libc::getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        if read < 0 { None } else { Some(value) }
+    }
+
+    fn write_xattr(path: &Path, name: &str, value: &[u8]) {
+        let path = c_path(path).unwrap();
+        let name = std::ffi::CString::new(name).unwrap();
+        // SAFETY: all three pointers are live for the duration of the call.
+        let result = unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert_eq!(result, 0, "failed to seed an extended attribute");
+    }
+
+    /// Regression: Git object files are `0444`, and every file on recent macOS
+    /// carries `com.apple.provenance`. Applying the mode before the extended
+    /// attributes made `setxattr` fail with `EACCES`, so `rift create` could not
+    /// copy any Git repository.
+    #[test]
+    fn filtered_strategy_copies_read_only_files() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let objects = source.join(".git/objects/0d");
+        fs::create_dir_all(&objects).unwrap();
+        let object = objects.join("8a474f");
+        fs::write(&object, "object").unwrap();
+        write_xattr(&object, "user.rift", b"marked");
+        fs::set_permissions(&object, fs::Permissions::from_mode(0o444)).unwrap();
+
+        ApfsStrategy
+            .copy_directory(&source, &destination, CopyMode::Filtered)
+            .unwrap();
+
+        let copied = destination.join(".git/objects/0d/8a474f");
+        assert_eq!(fs::read_to_string(&copied).unwrap(), "object");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().permissions().mode() & 0o777,
+            0o444
+        );
+        assert_eq!(
+            read_xattr(&copied, "user.rift").as_deref(),
+            Some(&b"marked"[..])
+        );
+    }
+
+    /// Regression: a source file may belong to a group the caller is not a
+    /// member of, such as `wheel`. An unprivileged `lchown` then fails with
+    /// `EPERM`, which must not abort the copy: preserving ownership is a
+    /// privileged operation, and a copy owned by the caller is still correct.
+    #[test]
+    fn filtered_strategy_copies_entries_owned_by_another_group() {
+        // `/private/tmp` belongs to `wheel`, and a new entry inherits its
+        // parent's group, so this yields a source the caller does not share a
+        // group with — without needing privilege to set it up.
+        let Ok(source_root) = TempDir::new_in("/private/tmp") else {
+            return;
+        };
+        let source = source_root.path().join("source");
+        let nested = source.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file.txt"), "hello").unwrap();
+
+        let foreign = fs::metadata(&nested).unwrap().gid();
+        if nix_groups().contains(&foreign) {
+            // The caller shares the group after all; nothing to prove.
+            assert!(
+                std::env::var_os("RIFT_REQUIRE_APFS_TESTS").is_none(),
+                "the environment cannot produce an entry owned by a foreign group"
+            );
+            return;
+        }
+
+        // The destination inherits a different group, so reproducing the source
+        // group here is the privileged operation that must not be fatal.
+        let destination_root = TempDir::new().unwrap();
+        let destination = destination_root.path().join("destination");
+        ApfsStrategy
+            .copy_directory(&source, &destination, CopyMode::Filtered)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("nested/file.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    /// Regression: a directory that the owner cannot write must still receive
+    /// its extended attributes, which requires copying them before the mode.
+    #[test]
+    fn filtered_strategy_copies_read_only_directories() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let locked = source.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("file.txt"), "hello").unwrap();
+        write_xattr(&locked, "user.rift", b"dir");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = ApfsStrategy.copy_directory(&source, &destination, CopyMode::Filtered);
+
+        // Restore write access so the temporary directory can be cleaned up.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+
+        let copied = destination.join("locked");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        assert_eq!(
+            read_xattr(&copied, "user.rift").as_deref(),
+            Some(&b"dir"[..])
+        );
+        fs::set_permissions(&copied, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]

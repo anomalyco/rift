@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use rift::{CopyMode, Create, CreateOptions, HookMode, InitProgress, Manager};
+use rift::{CopyMode, Create, CreateOptions, HookMode, InitProgress, Manager, RemoveOptions};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -107,6 +107,8 @@ enum Command {
         children: bool,
         #[arg(short = 'f', long)]
         force: bool,
+        #[arg(long)]
+        no_hooks: bool,
     },
     List {
         of: Option<PathBuf>,
@@ -239,11 +241,19 @@ fn run() -> Result<()> {
             at,
             children,
             force,
+            no_hooks,
         } => {
             let at = manager.workspace(at.unwrap_or(std::env::current_dir()?))?;
             let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
             if children {
-                let removed = manager.remove_all(&at)?;
+                let removed = manager.remove_all_with_options(
+                    &at,
+                    RemoveOptions::default().hook_mode(if no_hooks {
+                        HookMode::Skip
+                    } else {
+                        HookMode::Run
+                    }),
+                )?;
                 for path in &removed {
                     if cli.shell_cwd {
                         eprintln!("removed {}", path.display());
@@ -267,7 +277,14 @@ fn run() -> Result<()> {
                 } else {
                     None
                 };
-                manager.remove(&at)?;
+                manager.remove_with_options(
+                    &at,
+                    RemoveOptions::default().hook_mode(if no_hooks {
+                        HookMode::Skip
+                    } else {
+                        HookMode::Run
+                    }),
+                )?;
                 if unregistering_root {
                     eprintln!("Unregistered  {}", at.display());
                 }
@@ -416,6 +433,16 @@ mod tests {
                 no_hooks: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn remove_command_accepts_no_hooks() {
+        let cli = Cli::try_parse_from(["rift", "remove", "--no-hooks"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Command::Remove { no_hooks: true, .. }
         ));
     }
 

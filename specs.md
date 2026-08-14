@@ -46,22 +46,31 @@ Default behavior:
 - Copy the workspace while excluding known heavyweight regenerable dependency, build, and cache artifacts.
 - Preserve manifests, lockfiles, dirty files, staged files, untracked files, and ignored files that are not part of the built-in excluded artifact set.
 - `copyAll` opts into exact copying, including dependency and build artifacts.
-- `hooks` defaults to true and runs `.rift.toml` postcreate hooks after workspace creation, Git preparation, and registry insertion. `hooks: false` skips config loading and hook execution.
+- `hooks` defaults to true and runs `.rift.toml` precreate hooks before copying and postcreate hooks after workspace creation, Git preparation, and registry insertion. `hooks: false` skips config loading and hook execution.
 - Detach `HEAD` in the new workspace.
 - Return the path of the new workspace.
 
 Default excluded artifacts are matched at any depth and include `node_modules`, `.pnpm-store`, `.yarn/cache`, `.yarn/unplugged`, `.yarn/install-state.gz`, `.yarn/build-state.yml`, `target`, `.venv`, `venv`, `.tox`, `.nox`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.vite`, `.parcel-cache`, `.cache`, `dist`, `build`, and `coverage`.
 
-`.rift.toml` supports one v1 hook shape:
+`.rift.toml` supports four v1 lifecycle hooks with the same shape:
 
 ```toml
 version = 1
 
+[[hooks.precreate]]
+run = "pnpm run check"
+
 [[hooks.postcreate]]
 run = "pnpm install --frozen-lockfile"
+
+[[hooks.preremove]]
+run = "pnpm run cleanup"
+
+[[hooks.postremove]]
+run = "echo removed"
 ```
 
-Postcreate hooks run sequentially in the destination workspace with inherited stdio and environment plus `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. The first failing command stops later hooks. The created workspace remains registered and on disk, and the create operation reports a hook failure with the destination path.
+Hooks run sequentially with inherited stdio and environment plus `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. Precreate runs in the source workspace and postcreate runs in the destination. The first failing command stops later hooks. A precreate failure prevents copying; after a postcreate failure, the created workspace remains registered and on disk.
 
 On btrfs, `from` must already be a subvolume. If it is an ordinary directory, fail and instruct the user to run `rift init` first. On other reflink-capable Linux filesystems, clone the directory tree with native per-file reflinks.
 
@@ -88,6 +97,7 @@ Default storage is a hidden sibling directory of the original registered workspa
 remove(input: {
   at: AbsolutePath
   all?: boolean
+  hooks?: boolean
 }): void
 ```
 
@@ -98,6 +108,7 @@ remove(input: {
 - The CLI exposes the descendant-preserving mode as `rift remove --children`; the core and FFI input field remains `all`.
 - If `at` identifies a created rift, move its full descendant subtree into trash.
 - When `all` is true, preserve `at` and delete every managed descendant. In this mode `at` may be the registered source root.
+- `hooks` defaults to true. Preremove runs in `at` before filesystem or registry changes. Postremove runs after successful removal, from the trash directory when `at` was moved and from `at` when it was preserved. A preremove failure prevents removal; a postremove failure reports an error without rolling back the completed removal.
 - Resolve all descendants through `parent_id` and move their directories deepest-first.
 - Verify each existing directory's `.rift` marker before deleting it.
 - Refuse removal if any descendant path is missing, because the registered active tree no longer matches the filesystem.

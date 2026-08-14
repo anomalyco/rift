@@ -59,8 +59,9 @@ pub enum Error {
     InsideSource(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
-    #[error("postcreate hook failed at {path}: `{command}` {message}")]
+    #[error("{hook} hook failed at {path}: `{command}` {message}")]
     HookFailed {
+        hook: String,
         path: PathBuf,
         command: String,
         message: String,
@@ -102,6 +103,18 @@ impl Create {
 pub struct CreateOptions {
     pub copy_mode: CopyMode,
     pub hook_mode: HookMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RemoveOptions {
+    pub hook_mode: HookMode,
+}
+
+impl RemoveOptions {
+    pub fn hook_mode(mut self, hook_mode: HookMode) -> Self {
+        self.hook_mode = hook_mode;
+        self
+    }
 }
 
 impl CreateOptions {
@@ -224,6 +237,16 @@ impl Manager {
             HookMode::Skip => config::Config::default(),
         };
 
+        hook::run(
+            "precreate",
+            config.precreate(),
+            &from,
+            &from,
+            &destination,
+            &id,
+            &source.id,
+        )?;
+
         if let Err(error) = self
             .strategy
             .copy_directory(&from, &destination, options.copy_mode)
@@ -250,7 +273,15 @@ impl Manager {
             let _ = self.strategy.remove_directory(&destination);
         }
         result?;
-        hook::run_postcreate(config.postcreate(), &from, &destination, &id, &source.id)?;
+        hook::run(
+            "postcreate",
+            config.postcreate(),
+            &destination,
+            &from,
+            &destination,
+            &id,
+            &source.id,
+        )?;
         Ok(destination)
     }
 
@@ -306,26 +337,98 @@ impl Manager {
     }
 
     pub fn remove(&mut self, at: impl AsRef<Path>) -> Result<()> {
+        self.remove_with_options(at, RemoveOptions::default())
+    }
+
+    pub fn remove_with_options(
+        &mut self,
+        at: impl AsRef<Path>,
+        options: RemoveOptions,
+    ) -> Result<()> {
         let record = self.workspace_at(at)?;
-        if record.parent_id.is_none() {
-            return self.unregister_root(&record);
-        }
         marker::verify(&record.path, &record.id)?;
+        let config = self.remove_config(&record.path, options)?;
+        let parent_id = record.parent_id.as_ref().unwrap_or(&record.id);
+        hook::run(
+            "preremove",
+            config.preremove(),
+            &record.path,
+            &record.path,
+            &record.path,
+            &record.id,
+            parent_id,
+        )?;
+        if record.parent_id.is_none() {
+            self.unregister_root(&record)?;
+            return hook::run(
+                "postremove",
+                config.postremove(),
+                &record.path,
+                &record.path,
+                &record.path,
+                &record.id,
+                parent_id,
+            );
+        }
         let rows = self
             .registry
             .subtree(&record.id, SubtreeScope::IncludingRoot)?;
         self.trash_rows(&rows)?;
-        Ok(())
+        let trashed = trash_path(&record.id, &record.path)?;
+        hook::run(
+            "postremove",
+            config.postremove(),
+            &trashed,
+            &record.path,
+            &trashed,
+            &record.id,
+            parent_id,
+        )
     }
 
     pub fn remove_all(&mut self, at: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.remove_all_with_options(at, RemoveOptions::default())
+    }
+
+    pub fn remove_all_with_options(
+        &mut self,
+        at: impl AsRef<Path>,
+        options: RemoveOptions,
+    ) -> Result<Vec<PathBuf>> {
         let record = self.workspace_at(at)?;
         marker::verify(&record.path, &record.id)?;
+        let config = self.remove_config(&record.path, options)?;
+        let parent_id = record.parent_id.as_ref().unwrap_or(&record.id);
+        hook::run(
+            "preremove",
+            config.preremove(),
+            &record.path,
+            &record.path,
+            &record.path,
+            &record.id,
+            parent_id,
+        )?;
         let rows = self
             .registry
             .subtree(&record.id, SubtreeScope::DescendantsOnly)?;
         self.trash_rows(&rows)?;
+        hook::run(
+            "postremove",
+            config.postremove(),
+            &record.path,
+            &record.path,
+            &record.path,
+            &record.id,
+            parent_id,
+        )?;
         Ok(rows.into_iter().map(|record| record.path).collect())
+    }
+
+    fn remove_config(&self, workspace: &Path, options: RemoveOptions) -> Result<config::Config> {
+        match options.hook_mode {
+            HookMode::Run => config::Config::load(workspace),
+            HookMode::Skip => Ok(config::Config::default()),
+        }
     }
 
     fn unregister_root(&mut self, record: &Record) -> Result<()> {

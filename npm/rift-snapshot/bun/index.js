@@ -55,8 +55,8 @@ export function create({ from = process.cwd(), name, into, copyAll, hooks, datab
   return call({ command: "create", from, name, into, copyAll, hooks, database })
 }
 
-export function remove({ at = process.cwd(), all = false, database } = {}) {
-  const result = call({ command: "remove", at, all, database })
+export function remove({ at = process.cwd(), all = false, hooks, database } = {}) {
+  const result = call({ command: "remove", at, all, hooks, database })
   return all ? result : undefined
 }
 

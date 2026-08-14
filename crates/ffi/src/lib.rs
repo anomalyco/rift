@@ -1,4 +1,4 @@
-use rift::{CopyMode, Create, CreateOptions, Error, HookMode, Manager};
+use rift::{CopyMode, Create, CreateOptions, Error, HookMode, Manager, RemoveOptions};
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
@@ -27,6 +27,7 @@ enum Command {
     Remove {
         at: PathBuf,
         all: Option<bool>,
+        hooks: Option<bool>,
     },
     List {
         of: PathBuf,
@@ -137,15 +138,20 @@ fn execute(input: &str) -> Result<Value, Failure> {
             )
             .map(|path| Value::Path(Some(path)))
             .map_err(Failure::from),
-        Command::Remove { at, all } => {
+        Command::Remove { at, all, hooks } => {
+            let options = RemoveOptions::default().hook_mode(if hooks.unwrap_or(true) {
+                HookMode::Run
+            } else {
+                HookMode::Skip
+            });
             if all.unwrap_or(false) {
                 manager
-                    .remove_all(at)
+                    .remove_all_with_options(at, options)
                     .map(Value::Paths)
                     .map_err(Failure::from)
             } else {
                 manager
-                    .remove(at)
+                    .remove_with_options(at, options)
                     .map(|()| Value::Empty(()))
                     .map_err(Failure::from)
             }
@@ -271,6 +277,28 @@ mod tests {
     }
 
     #[test]
+    fn remove_hooks_option_is_accepted_by_the_protocol() {
+        let request = serde_json::from_str::<Request>(
+            r#"{
+                "command": "remove",
+                "at": "/tmp/app",
+                "all": true,
+                "hooks": false
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            request.command,
+            Command::Remove {
+                all: Some(true),
+                hooks: Some(false),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn hook_and_config_errors_are_exposed_with_codes_and_paths() {
         let config = serde_json::to_value(Response::Error {
             error: Error::InvalidConfig {
@@ -282,6 +310,7 @@ mod tests {
         .unwrap();
         let hook = serde_json::to_value(Response::Error {
             error: Error::HookFailed {
+                hook: "postcreate".into(),
                 path: PathBuf::from("/tmp/app"),
                 command: "exit 1".into(),
                 message: "exited with 1".into(),

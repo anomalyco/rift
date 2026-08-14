@@ -16,6 +16,7 @@ export interface CreateOptions extends Options {
 
 export interface RemoveOptions extends AtOptions {
   all?: boolean
+  hooks?: boolean
 }
 
 export interface OfOptions extends Options {

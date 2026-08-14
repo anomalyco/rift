@@ -62,10 +62,13 @@ On btrfs, exact copies use writable subvolume snapshots and filtered copies use 
 
 When the workspace is a Git repository, the new workspace has detached `HEAD` and retains index and working-tree state.
 
-If the source contains `.rift.toml`, `rift create` runs configured postcreate hooks after the workspace is created, registered, and prepared. Use `--no-hooks` to skip them.
+If the source contains `.rift.toml`, `rift create` runs configured precreate hooks before copying and postcreate hooks after the workspace is created, registered, and prepared. Use `--no-hooks` to skip them.
 
 ```toml
 version = 1
+
+[[hooks.precreate]]
+run = "pnpm run check"
 
 [[hooks.postcreate]]
 run = "pnpm install --frozen-lockfile"
@@ -74,7 +77,7 @@ run = "pnpm install --frozen-lockfile"
 run = "pnpm run codegen"
 ```
 
-Postcreate commands run in the new workspace root. If a hook fails, the workspace remains registered and `rift create` exits with an error.
+Precreate commands run in the source workspace; postcreate commands run in the new workspace. A precreate failure prevents creation. If a postcreate hook fails, the workspace remains registered and `rift create` exits with an error.
 
 ### List And Ancestors
 
@@ -91,12 +94,23 @@ rift ancestors
 rift remove                         # trash the current created rift subtree
 rift remove -f ~/code/app           # unregister a source root
 rift remove --children ~/code/app   # trash descendants, preserve the selected workspace
+rift remove --no-hooks ~/code/app/task
 rift gc                             # physically delete trash and prune missing entries
 ```
 
 Removing a created rift moves its active subtree into adjacent `.trash` storage. `rift gc` deletes that storage later.
 
 Removing a source root requires `-f` in the CLI. The source directory remains on disk. Its `.rift` marker is removed. Existing registered descendants are moved into trash. Missing descendants are removed from the registry.
+
+`preremove` hooks run in the selected workspace before removal. `postremove` hooks run after removal, from the moved trash directory when the selected workspace was trashed and from the selected workspace when it was preserved. Use `--no-hooks` to skip remove hooks.
+
+```toml
+[[hooks.preremove]]
+run = "pnpm run cleanup"
+
+[[hooks.postremove]]
+run = "echo removed $RIFT_SOURCE"
+```
 
 ### Shell Integration
 
@@ -150,8 +164,8 @@ With Node's permission model, also pass `--allow-ffi`.
 ```ts
 init(options?: { at?: string; database?: string }): null
 create(options?: { from?: string; name?: string; into?: string; copyAll?: boolean; hooks?: boolean; database?: string }): string
-remove(options?: { at?: string; all?: false; database?: string }): void
-remove(options: { at?: string; all: true; database?: string }): string[]
+remove(options?: { at?: string; all?: false; hooks?: boolean; database?: string }): void
+remove(options: { at?: string; all: true; hooks?: boolean; database?: string }): string[]
 list(options?: { of?: string; database?: string }): string[]
 ancestors(options?: { of?: string; database?: string }): string[]
 gc(options?: { database?: string }): string[]

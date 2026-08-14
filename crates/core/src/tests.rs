@@ -212,6 +212,66 @@ run = "echo second >> hook.log"
 }
 
 #[test]
+fn create_runs_precreate_before_copy_and_postcreate_after_copy() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::write(
+        source.join(".rift.toml"),
+        r#"
+version = 1
+
+[[hooks.precreate]]
+run = "echo pre >> lifecycle.log"
+
+[[hooks.postcreate]]
+run = "echo post >> lifecycle.log"
+"#,
+    )
+    .unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create(create_input(source.clone(), "lifecycle"))
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(source.join("lifecycle.log")).unwrap(),
+        "pre\n"
+    );
+    assert_eq!(
+        fs::read_to_string(child.join("lifecycle.log")).unwrap(),
+        "pre\npost\n"
+    );
+}
+
+#[test]
+fn precreate_failure_does_not_create_or_register_workspace() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::write(
+        source.join(".rift.toml"),
+        "version = 1\n[[hooks.precreate]]\nrun = \"exit 7\"\n",
+    )
+    .unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let expected = child_path(&source, "precreate-failure");
+
+    let error = manager
+        .create(create_input(source.clone(), "precreate-failure"))
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        Error::HookFailed { hook, path, .. }
+            if hook == "precreate" && path == source
+    ));
+    assert!(!expected.exists());
+    assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[test]
 fn postcreate_failure_leaves_registered_workspace() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
@@ -341,6 +401,62 @@ fn removal_rejects_marker_mismatch_and_existing_trash_target() {
         manager.remove(&child),
         Err(Error::AlreadyExists(_))
     ));
+}
+
+#[test]
+fn remove_runs_hooks_before_and_after_moving_workspace() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager
+        .create(Create::new(source).named("remove-hooks"))
+        .unwrap();
+    fs::write(
+        child.join(".rift.toml"),
+        r#"
+version = 1
+
+[[hooks.preremove]]
+run = "echo pre >> lifecycle.log"
+
+[[hooks.postremove]]
+run = "echo post >> lifecycle.log"
+"#,
+    )
+    .unwrap();
+    let trash = trash_path(&marker_id(&child), &child).unwrap();
+
+    manager.remove(&child).unwrap();
+
+    assert!(!child.exists());
+    assert_eq!(
+        fs::read_to_string(trash.join("lifecycle.log")).unwrap(),
+        "pre\npost\n"
+    );
+}
+
+#[test]
+fn preremove_failure_leaves_workspace_active() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager
+        .create(Create::new(source.clone()).named("remove-failure"))
+        .unwrap();
+    fs::write(
+        child.join(".rift.toml"),
+        "version = 1\n[[hooks.preremove]]\nrun = \"exit 9\"\n",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        manager.remove(&child),
+        Err(Error::HookFailed { hook, .. }) if hook == "preremove"
+    ));
+    assert!(child.exists());
+    assert_eq!(manager.list(&source).unwrap(), vec![child]);
 }
 
 #[test]

@@ -164,6 +164,43 @@ fn create_filters_regenerable_artifacts_by_default() {
 }
 
 #[test]
+fn create_preserves_tracked_files_in_filtered_directories() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::create_dir_all(source.join("platform/coverage")).unwrap();
+    fs::write(source.join("platform/coverage/module.py"), "tracked").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["add", "platform/coverage/module.py"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create(create_input(source, "tracked-artifact"))
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(child.join("platform/coverage/module.py")).unwrap(),
+        "tracked"
+    );
+}
+
+#[test]
 fn create_copy_all_preserves_regenerable_artifacts() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);

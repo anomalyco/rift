@@ -19,10 +19,10 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
     use std::collections::HashMap;
     use std::os::unix::fs::MetadataExt;
 
-    let filter = CopyFilter;
+    let filter = CopyFilter::for_source(from);
     let mut hard_links = HashMap::new();
     let mut directories = Vec::new();
-    fs::create_dir(to)?;
+    fs::create_dir(to).map_err(|error| filesystem_error("create directory", to, error))?;
     for entry in WalkDir::new(from)
         .min_depth(1)
         .follow_links(false)
@@ -41,16 +41,20 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
                 .strip_prefix(from)
                 .map_err(|error| Error::Path(error.to_string()))?,
         );
-        let metadata = fs::symlink_metadata(source)?;
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|error| filesystem_error("read metadata", source, error))?;
         let file_type = metadata.file_type();
         if file_type.is_dir() {
-            fs::create_dir(&destination)?;
+            fs::create_dir(&destination)
+                .map_err(|error| filesystem_error("create directory", &destination, error))?;
             directories.push((source.to_path_buf(), destination));
         } else if file_type.is_file() {
             let key = (metadata.dev(), metadata.ino());
             if metadata.nlink() > 1 {
                 if let Some(existing) = hard_links.get(&key) {
-                    fs::hard_link(existing, &destination)?;
+                    fs::hard_link(existing, &destination).map_err(|error| {
+                        filesystem_error("create hard link", &destination, error)
+                    })?;
                 } else {
                     clone_path_apfs(source, &destination)?;
                     hard_links.insert(key, destination.clone());
@@ -58,18 +62,21 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
             } else {
                 clone_path_apfs(source, &destination)?;
             }
-            copy_metadata_apfs(source, &destination, MetadataTarget::FileOrDirectory)?;
+            copy_metadata_apfs(source, &destination, MetadataTarget::ClonedFile)?;
         } else if file_type.is_symlink() {
-            std::os::unix::fs::symlink(fs::read_link(source)?, &destination)?;
+            let link = fs::read_link(source)
+                .map_err(|error| filesystem_error("read symlink", source, error))?;
+            std::os::unix::fs::symlink(link, &destination)
+                .map_err(|error| filesystem_error("create symlink", &destination, error))?;
             copy_metadata_apfs(source, &destination, MetadataTarget::Symlink)?;
         } else {
             return Err(Error::UnsupportedEntry(source.to_path_buf()));
         }
     }
     for (source, destination) in directories.into_iter().rev() {
-        copy_metadata_apfs(&source, &destination, MetadataTarget::FileOrDirectory)?;
+        copy_metadata_apfs(&source, &destination, MetadataTarget::Directory)?;
     }
-    copy_metadata_apfs(from, to, MetadataTarget::FileOrDirectory)?;
+    copy_metadata_apfs(from, to, MetadataTarget::Directory)?;
     Ok(())
 }
 
@@ -96,24 +103,31 @@ fn clone_path_apfs(from: &Path, to: &Path) -> Result<()> {
 
 #[derive(Clone, Copy)]
 enum MetadataTarget {
-    FileOrDirectory,
+    ClonedFile,
+    Directory,
     Symlink,
 }
 
 fn copy_metadata_apfs(from: &Path, to: &Path, target: MetadataTarget) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let metadata = fs::symlink_metadata(from)?;
+    let metadata = fs::symlink_metadata(from)
+        .map_err(|error| filesystem_error("read metadata", from, error))?;
     let destination = c_path(to)?;
-    // SAFETY: `destination` is a valid null-terminated path, and uid/gid come
-    // from filesystem metadata for `from`.
-    if unsafe { libc::lchown(destination.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+    set_owner_apfs(to, &destination, metadata.uid(), metadata.gid())?;
+    if !matches!(target, MetadataTarget::Symlink) {
+        let current = fs::symlink_metadata(to)
+            .map_err(|error| filesystem_error("read destination metadata", to, error))?;
+        if current.mode() != metadata.mode() {
+            fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))
+                .map_err(|error| filesystem_error("set permissions", to, error))?;
+        }
     }
-    if matches!(target, MetadataTarget::FileOrDirectory) {
-        fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))?;
+    // clonefile already copied regular-file xattrs. Rewriting protected xattrs
+    // such as com.apple.provenance fails even when their values are unchanged.
+    if !matches!(target, MetadataTarget::ClonedFile) {
+        copy_xattrs_apfs(from, to)?;
     }
-    copy_xattrs_apfs(from, to)?;
     let times = [
         libc::timespec {
             tv_sec: metadata.atime(),
@@ -135,20 +149,59 @@ fn copy_metadata_apfs(from: &Path, to: &Path, target: MetadataTarget) -> Result<
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(filesystem_error(
+            "set timestamps",
+            to,
+            std::io::Error::last_os_error(),
+        ));
     }
     Ok(())
 }
 
+fn set_owner_apfs(to: &Path, destination: &std::ffi::CStr, uid: u32, gid: u32) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let current = fs::symlink_metadata(to)
+        .map_err(|error| filesystem_error("read destination metadata", to, error))?;
+    if !owner_needs_update(&current, uid, gid) {
+        return Ok(());
+    }
+    // SAFETY: `destination` is a valid null-terminated path, and uid/gid come
+    // from filesystem metadata for the source path.
+    if unsafe { libc::lchown(destination.as_ptr(), uid, gid) } != 0 {
+        let error = std::io::Error::last_os_error();
+        // An unprivileged clone cannot restore a source group that the caller
+        // does not belong to. Keep clonefile's caller-owned group in that case.
+        if error.raw_os_error() == Some(libc::EPERM) && current.uid() == uid && current.gid() != gid
+        {
+            return Ok(());
+        }
+        return Err(filesystem_error("set owner", to, error));
+    }
+    Ok(())
+}
+
+fn owner_needs_update(metadata: &fs::Metadata, uid: u32, gid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.uid() != uid || metadata.gid() != gid
+}
+
 fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
-    let from = c_path(from)?;
-    let to = c_path(to)?;
+    let from_path = from;
+    let to_path = to;
+    let from = c_path(from_path)?;
+    let to = c_path(to_path)?;
     // SAFETY: `from` is a valid C path. A null buffer with size 0 asks the
     // kernel for the required list size.
     let size =
         unsafe { libc::listxattr(from.as_ptr(), std::ptr::null_mut(), 0, libc::XATTR_NOFOLLOW) };
     if size < 0 {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(filesystem_error(
+            "list extended attributes",
+            from_path,
+            std::io::Error::last_os_error(),
+        ));
     }
     let mut names = vec![0_u8; size as usize];
     // SAFETY: `names` was allocated with the size reported by the previous
@@ -163,7 +216,11 @@ fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
             )
         } < 0
     {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(filesystem_error(
+            "list extended attributes",
+            from_path,
+            std::io::Error::last_os_error(),
+        ));
     }
     for name in names
         .split(|byte| *byte == 0)
@@ -184,7 +241,11 @@ fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
             )
         };
         if size < 0 {
-            return Err(std::io::Error::last_os_error().into());
+            return Err(filesystem_error(
+                "read extended attribute",
+                from_path,
+                std::io::Error::last_os_error(),
+            ));
         }
         let mut value = vec![0_u8; size as usize];
         // SAFETY: `value` was allocated with the exact size reported by
@@ -201,7 +262,11 @@ fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
                 )
             } < 0
         {
-            return Err(std::io::Error::last_os_error().into());
+            return Err(filesystem_error(
+                "read extended attribute",
+                from_path,
+                std::io::Error::last_os_error(),
+            ));
         }
         // SAFETY: `to`, `name`, and `value` are valid for the duration of the
         // call. `XATTR_NOFOLLOW` keeps symlink behavior consistent.
@@ -216,10 +281,26 @@ fn copy_xattrs_apfs(from: &Path, to: &Path) -> Result<()> {
             )
         } != 0
         {
-            return Err(std::io::Error::last_os_error().into());
+            return Err(filesystem_error(
+                "write extended attribute",
+                to_path,
+                std::io::Error::last_os_error(),
+            ));
         }
     }
     Ok(())
+}
+
+fn filesystem_error(
+    operation: &'static str,
+    path: impl AsRef<Path>,
+    source: std::io::Error,
+) -> Error {
+    Error::Filesystem {
+        operation,
+        path: path.as_ref().to_path_buf(),
+        source,
+    }
 }
 
 fn c_path(path: &Path) -> Result<std::ffi::CString> {
@@ -234,6 +315,32 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use tempfile::TempDir;
+
+    #[test]
+    fn unchanged_owner_does_not_need_an_update() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let metadata = fs::symlink_metadata(temp.path()).unwrap();
+
+        assert!(!owner_needs_update(
+            &metadata,
+            metadata.uid(),
+            metadata.gid()
+        ));
+    }
+
+    #[test]
+    fn unavailable_foreign_group_is_nonportable() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let before = fs::symlink_metadata(temp.path()).unwrap();
+        assert_ne!(before.gid(), 0);
+
+        set_owner_apfs(temp.path(), &c_path(temp.path()).unwrap(), before.uid(), 0).unwrap();
+
+        assert_eq!(
+            fs::symlink_metadata(temp.path()).unwrap().gid(),
+            before.gid()
+        );
+    }
 
     #[test]
     fn strategy_clones_and_removes_a_workspace() {
@@ -283,7 +390,50 @@ mod tests {
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o710)).unwrap();
         let file = nested.join("file.txt");
         fs::write(&file, "hello").unwrap();
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        let file_path = c_path(&file).unwrap();
+        let attribute = std::ffi::CString::new("com.rift.test").unwrap();
+        let attribute_value = b"preserved";
+        // SAFETY: the path and attribute are valid C strings, and the value
+        // pointer is valid for `attribute_value.len()` bytes.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    file_path.as_ptr(),
+                    attribute.as_ptr(),
+                    attribute_value.as_ptr().cast(),
+                    attribute_value.len(),
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        // The read-only mode makes a redundant xattr rewrite fail with EACCES,
+        // while the special bits verify clonefile's mode exception is repaired.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o6555)).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o7777,
+            0o6555
+        );
+        // Confirm this fixture rejects the same setxattr operation the old
+        // metadata replay performed.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    file_path.as_ptr(),
+                    attribute.as_ptr(),
+                    attribute_value.as_ptr().cast(),
+                    attribute_value.len(),
+                    0,
+                    libc::XATTR_NOFOLLOW,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EACCES)
+        );
         fs::hard_link(&file, nested.join("hard.txt")).unwrap();
         std::os::unix::fs::symlink("file.txt", nested.join("link.txt")).unwrap();
         fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
@@ -315,9 +465,25 @@ mod tests {
                 .unwrap()
                 .permissions()
                 .mode()
-                & 0o777,
-            0o640
+                & 0o7777,
+            0o6555
         );
+        let cloned_file = c_path(&destination.join("nested/file.txt")).unwrap();
+        let mut cloned_attribute = [0_u8; 9];
+        // SAFETY: the path and attribute are valid C strings, and the buffer
+        // pointer is valid for `cloned_attribute.len()` bytes.
+        let cloned_attribute_size = unsafe {
+            libc::getxattr(
+                cloned_file.as_ptr(),
+                attribute.as_ptr(),
+                cloned_attribute.as_mut_ptr().cast(),
+                cloned_attribute.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(cloned_attribute_size, attribute_value.len() as isize);
+        assert_eq!(&cloned_attribute, attribute_value);
         assert_eq!(
             fs::metadata(destination.join("nested"))
                 .unwrap()

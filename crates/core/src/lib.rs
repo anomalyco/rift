@@ -27,6 +27,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[error("{operation} failed for {path}: {source}")]
+    Filesystem {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{0}")]
     Database(#[from] rusqlite::Error),
     #[error("{0}")]

@@ -84,7 +84,7 @@ pub(crate) struct TestStrategy;
 impl Strategy for TestStrategy {
     fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
         fs::create_dir(to)?;
-        let filter = CopyFilter;
+        let filter = CopyFilter::for_source(from);
         for entry in walkdir::WalkDir::new(from)
             .min_depth(1)
             .follow_links(false)

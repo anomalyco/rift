@@ -75,6 +75,7 @@ impl From<Error> for Failure {
     fn from(error: Error) -> Self {
         let (code, path) = match &error {
             Error::Io(_) => ("io", None),
+            Error::Filesystem { path, .. } => ("io", Some(path.clone())),
             Error::Database(_) => ("database", None),
             Error::Walk(_) => ("walk", None),
             Error::Path(_) => ("invalid_path", None),

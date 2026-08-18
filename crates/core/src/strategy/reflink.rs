@@ -67,7 +67,7 @@ pub(super) fn import_directory_linux_filtered(
     to: &Path,
     progress: &mut dyn FnMut(InitProgress),
 ) -> Result<()> {
-    import_directory_linux_with_filter(from, to, progress, Some(CopyFilter))
+    import_directory_linux_with_filter(from, to, progress, Some(CopyFilter::for_source(from)))
 }
 
 fn import_directory_linux_with_filter(
@@ -86,7 +86,7 @@ fn import_directory_linux_with_filter(
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| {
-            filter.map_or(true, |filter| {
+            filter.as_ref().map_or(true, |filter| {
                 entry
                     .path()
                     .strip_prefix(from)

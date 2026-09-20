@@ -44,11 +44,13 @@ impl Shell {
                     r#"rift() {{
   case "${{1-}}" in
     init|create|remove)
-      local __rift_cwd
-      __rift_cwd="$({executable} --shell-cwd "$@")" || return $?
+      local __rift_cwd __rift_status
+      __rift_cwd="$({executable} --shell-cwd "$@")"
+      __rift_status=$?
       if [ -n "$__rift_cwd" ]; then
         builtin cd -- "$__rift_cwd" || return $?
       fi
+      return $__rift_status
       ;;
     *)
       {executable} "$@"
@@ -246,24 +248,29 @@ fn run() -> Result<()> {
             let at = manager.workspace(at.unwrap_or(std::env::current_dir()?))?;
             let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
             if children {
-                let removed = manager.remove_all_with_options(
+                let result = manager.remove_all_with_options(
                     &at,
                     RemoveOptions::default().hook_mode(if no_hooks {
                         HookMode::Skip
                     } else {
                         HookMode::Run
                     }),
-                )?;
-                for path in &removed {
-                    if cli.shell_cwd {
-                        eprintln!("removed {}", path.display());
-                    } else {
-                        println!("{}", path.display());
+                );
+                if let Ok(removed) = &result {
+                    for path in removed {
+                        if cli.shell_cwd {
+                            eprintln!("removed {}", path.display());
+                        } else {
+                            println!("{}", path.display());
+                        }
                     }
                 }
-                if cli.shell_cwd && removed.iter().any(|path| cwd.starts_with(path)) {
+                // Children are trashed before postremove runs, so the shell
+                // must leave a removed child even when the hook fails.
+                if cli.shell_cwd && !cwd.exists() {
                     println!("{}", at.display());
                 }
+                result?;
             } else {
                 let ancestors = manager.ancestors(&at)?;
                 let unregistering_root = ancestors.is_empty();
@@ -277,25 +284,29 @@ fn run() -> Result<()> {
                 } else {
                     None
                 };
-                manager.remove_with_options(
+                let result = manager.remove_with_options(
                     &at,
                     RemoveOptions::default().hook_mode(if no_hooks {
                         HookMode::Skip
                     } else {
                         HookMode::Run
                     }),
-                )?;
-                if unregistering_root {
-                    eprintln!("Unregistered  {}", at.display());
-                }
-                if cli.shell_cwd {
-                    if !unregistering_root {
+                );
+                if result.is_ok() {
+                    if unregistering_root {
+                        eprintln!("Unregistered  {}", at.display());
+                    } else if cli.shell_cwd {
                         eprintln!("removed {}", at.display());
                     }
-                    if let Some(destination) = destination {
-                        println!("{}", destination.display());
-                    }
                 }
+                // The workspace is trashed before postremove runs, so the shell
+                // must leave it even when the hook fails.
+                if let Some(destination) = destination
+                    && (result.is_ok() || !at.exists())
+                {
+                    println!("{}", destination.display());
+                }
+                result?;
             }
             Ok(())
         }
@@ -451,11 +462,13 @@ mod tests {
         let wrapper = r#"rift() {
   case "${1-}" in
     init|create|remove)
-      local __rift_cwd
-      __rift_cwd="$('/tmp/rift' --shell-cwd "$@")" || return $?
+      local __rift_cwd __rift_status
+      __rift_cwd="$('/tmp/rift' --shell-cwd "$@")"
+      __rift_status=$?
       if [ -n "$__rift_cwd" ]; then
         builtin cd -- "$__rift_cwd" || return $?
       fi
+      return $__rift_status
       ;;
     *)
       '/tmp/rift' "$@"

@@ -91,6 +91,7 @@ impl From<Error> for Failure {
             Error::MarkerMismatch(path) => ("marker_mismatch", Some(path.clone())),
             Error::UnknownMarker(path) => ("unknown_marker", Some(path.clone())),
             Error::AlreadyExists(path) => ("already_exists", Some(path.clone())),
+            Error::NamesExhausted(path) => ("names_exhausted", Some(path.clone())),
             Error::MissingRift(path) => ("missing_rift", Some(path.clone())),
             Error::InsideSource(path) => ("inside_source", Some(path.clone())),
             Error::InvalidConfig { path, .. } => ("invalid_config", Some(path.clone())),

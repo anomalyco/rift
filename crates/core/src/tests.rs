@@ -129,6 +129,39 @@ fn create_supports_custom_storage_and_rejects_invalid_destinations() {
         manager.create(Create::new(source.join("file.txt")).named("file")),
         Err(Error::Path(_))
     ));
+    assert!(matches!(
+        manager.create(Create::new(source.clone()).named("/")),
+        Err(Error::Path(_))
+    ));
+    assert!(matches!(
+        manager.create(Create::new(source).named(".trash")),
+        Err(Error::Path(_))
+    ));
+}
+
+#[test]
+fn generated_names_skip_existing_directories() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let storage = source.parent().unwrap().join(".rifts/app");
+    fs::create_dir_all(&storage).unwrap();
+    let mut taken = Vec::new();
+    for name in name::generated().skip(1) {
+        fs::create_dir(storage.join(name.as_str())).unwrap();
+        taken.push(name);
+    }
+
+    let created = manager.create(Create::new(source.clone())).unwrap();
+
+    let created_name = created.file_name().unwrap().to_str().unwrap();
+    assert!(created.starts_with(&storage));
+    assert!(taken.iter().all(|name| name.as_str() != created_name));
+    assert!(matches!(
+        manager.create(Create::new(source)),
+        Err(Error::NamesExhausted(_))
+    ));
 }
 
 #[test]

@@ -60,6 +60,8 @@ pub enum Error {
     UnknownMarker(PathBuf),
     #[error("rift directory already exists: {0}")]
     AlreadyExists(PathBuf),
+    #[error("every generated rift name is already in use under: {0}")]
+    NamesExhausted(PathBuf),
     #[error("cannot remove subtree while a recorded rift path is missing: {0}")]
     MissingRift(PathBuf),
     #[error("cannot copy a workspace into itself: {0}")]
@@ -226,12 +228,17 @@ impl Manager {
             Some(path) => absolute_path(&path)?,
             None => default_storage(&root.path)?,
         };
-        let name = RiftName::from_optional(input.name)?;
-        if destination_parent.join(name.as_str()).starts_with(&from) {
-            return Err(Error::InsideSource(destination_parent.join(name.as_str())));
+        if destination_parent.starts_with(&from) {
+            return Err(Error::InsideSource(destination_parent));
         }
         fs::create_dir_all(&destination_parent)?;
         let destination_parent = fs::canonicalize(destination_parent)?;
+        let name = match input.name {
+            Some(name) => RiftName::new(name)?,
+            None => name::generated()
+                .find(|name| !destination_parent.join(name.as_str()).exists())
+                .ok_or_else(|| Error::NamesExhausted(destination_parent.clone()))?,
+        };
         let destination = destination_parent.join(name.as_str());
         if destination.starts_with(&from) {
             return Err(Error::InsideSource(destination));

@@ -1,21 +1,15 @@
 use crate::{Error, Result};
-use rand::Rng;
+use rand::seq::SliceRandom;
+use std::ffi::OsStr;
 use std::path::Path;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RiftName(String);
 
 impl RiftName {
-    pub(crate) fn from_optional(name: Option<String>) -> Result<Self> {
-        Self::new(name.unwrap_or_else(generated_name))
-    }
-
-    fn new(name: String) -> Result<Self> {
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || Path::new(&name).components().count() != 1
-        {
+    pub(crate) fn new(name: String) -> Result<Self> {
+        let single_segment = Path::new(&name).file_name() == Some(OsStr::new(&name));
+        if !single_segment || name.starts_with('.') {
             return Err(Error::Path(format!("invalid rift name: {name}")));
         }
         Ok(Self(name))
@@ -26,31 +20,37 @@ impl RiftName {
     }
 }
 
-fn generated_name() -> String {
-    const ADJECTIVES: &[&str] = &[
-        "amber", "bold", "brisk", "calm", "cedar", "clear", "cobalt", "coral", "dawn", "ember",
-        "gentle", "golden", "jade", "lively", "lunar", "mellow", "misty", "noble", "quiet",
-        "rapid", "river", "silver", "solar", "spruce", "steady", "swift", "tidal", "verdant",
-        "violet", "warm", "wild", "winter",
-    ];
-    const NOUNS: &[&str] = &[
-        "badger", "brook", "canyon", "cedar", "comet", "dune", "falcon", "field", "forest",
-        "harbor", "heron", "island", "lantern", "maple", "meadow", "mesa", "otter", "peak", "pine",
-        "reef", "ridge", "robin", "sparrow", "summit", "thicket", "trail", "valley", "willow",
-        "wren", "yarrow", "zephyr", "fox",
-    ];
+const ADJECTIVES: &[&str] = &[
+    "amber", "bold", "brisk", "calm", "cedar", "clear", "cobalt", "coral", "dawn", "ember",
+    "gentle", "golden", "jade", "lively", "lunar", "mellow", "misty", "noble", "quiet", "rapid",
+    "river", "silver", "solar", "spruce", "steady", "swift", "tidal", "verdant", "violet", "warm",
+    "wild", "winter",
+];
+const NOUNS: &[&str] = &[
+    "badger", "brook", "canyon", "cedar", "comet", "dune", "falcon", "field", "forest", "harbor",
+    "heron", "island", "lantern", "maple", "meadow", "mesa", "otter", "peak", "pine", "reef",
+    "ridge", "robin", "sparrow", "summit", "thicket", "trail", "valley", "willow", "wren",
+    "yarrow", "zephyr", "fox",
+];
 
-    let mut rng = rand::rng();
-    format!(
-        "{}-{}",
-        ADJECTIVES[rng.random_range(0..ADJECTIVES.len())],
-        NOUNS[rng.random_range(0..NOUNS.len())]
-    )
+/// Every adjective-noun name in random order, so callers can take the first
+/// one that is not already in use.
+pub(crate) fn generated() -> impl Iterator<Item = RiftName> {
+    let mut indexes = (0..ADJECTIVES.len() * NOUNS.len()).collect::<Vec<_>>();
+    indexes.shuffle(&mut rand::rng());
+    indexes.into_iter().map(|index| {
+        RiftName(format!(
+            "{}-{}",
+            ADJECTIVES[index / NOUNS.len()],
+            NOUNS[index % NOUNS.len()]
+        ))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn names_are_single_path_segments() {
@@ -58,19 +58,30 @@ mod tests {
         assert!(RiftName::new(String::new()).is_err());
         assert!(RiftName::new(".".into()).is_err());
         assert!(RiftName::new("..".into()).is_err());
+        assert!(RiftName::new("/".into()).is_err());
         assert!(RiftName::new("parent/child".into()).is_err());
+        assert!(RiftName::new("child/".into()).is_err());
     }
 
     #[test]
-    fn generated_names_are_readable_segments() {
-        let name = RiftName::from_optional(None).unwrap();
-        let parts = name.as_str().split('-').collect::<Vec<_>>();
+    fn names_cannot_be_hidden() {
+        assert!(RiftName::new(".trash".into()).is_err());
+        assert!(RiftName::new(".hidden".into()).is_err());
+    }
 
-        assert_eq!(parts.len(), 2);
-        assert!(
-            parts
-                .iter()
-                .all(|part| part.chars().all(|character| character.is_ascii_lowercase()))
-        );
+    #[test]
+    fn generated_names_cover_every_combination_once() {
+        let names = generated().collect::<Vec<_>>();
+        let unique = names.iter().map(RiftName::as_str).collect::<HashSet<_>>();
+
+        assert_eq!(names.len(), ADJECTIVES.len() * NOUNS.len());
+        assert_eq!(unique.len(), names.len());
+        assert!(names.iter().all(|name| {
+            let parts = name.as_str().split('-').collect::<Vec<_>>();
+            parts.len() == 2
+                && parts
+                    .iter()
+                    .all(|part| part.chars().all(|character| character.is_ascii_lowercase()))
+        }));
     }
 }

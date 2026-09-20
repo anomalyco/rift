@@ -36,15 +36,12 @@ const NOUNS: &[&str] = &[
 /// Every adjective-noun name in random order, so callers can take the first
 /// one that is not already in use.
 pub(crate) fn generated() -> impl Iterator<Item = RiftName> {
-    let mut indexes = (0..ADJECTIVES.len() * NOUNS.len()).collect::<Vec<_>>();
-    indexes.shuffle(&mut rand::rng());
-    indexes.into_iter().map(|index| {
-        RiftName(format!(
-            "{}-{}",
-            ADJECTIVES[index / NOUNS.len()],
-            NOUNS[index % NOUNS.len()]
-        ))
-    })
+    let mut names = ADJECTIVES
+        .iter()
+        .flat_map(|adjective| NOUNS.iter().map(move |noun| format!("{adjective}-{noun}")))
+        .collect::<Vec<_>>();
+    names.shuffle(&mut rand::rng());
+    names.into_iter().map(RiftName)
 }
 
 #[cfg(test)]

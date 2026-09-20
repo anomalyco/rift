@@ -38,6 +38,7 @@ export type RiftErrorCode =
   | "marker_mismatch"
   | "unknown_marker"
   | "already_exists"
+  | "names_exhausted"
   | "missing_rift"
   | "inside_source"
   | "invalid_config"

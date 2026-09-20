@@ -35,8 +35,11 @@ fn run_step(
     id: &RiftId,
     parent_id: &RiftId,
 ) -> Result<()> {
+    // Stdout belongs to the CLI: `rift create` prints the destination there for
+    // shell integration and scripts, so hook output must not mix into it.
     let status = shell_command(command)
         .current_dir(current_dir)
+        .stdout(std::io::stderr())
         .env("RIFT_SOURCE", source)
         .env("RIFT_DESTINATION", destination)
         .env("RIFT_ID", id.as_str())

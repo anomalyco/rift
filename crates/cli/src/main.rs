@@ -299,8 +299,9 @@ fn run() -> Result<()> {
                         eprintln!("removed {}", at.display());
                     }
                 }
-                // The workspace is trashed before postremove runs, so the shell
-                // must leave it even when the hook fails.
+                // A child is trashed before postremove runs, so the shell must
+                // leave it even when the hook fails. A root stays on disk after
+                // unregistering, hence the success check.
                 if let Some(destination) = destination
                     && (result.is_ok() || !at.exists())
                 {

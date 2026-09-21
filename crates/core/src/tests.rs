@@ -437,6 +437,25 @@ fn removal_rejects_marker_mismatch_and_existing_trash_target() {
 }
 
 #[test]
+fn failed_root_unregister_keeps_the_marker() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let database = temp.path().join("registry.sqlite");
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER block_delete BEFORE DELETE ON rift BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+        )
+        .unwrap();
+
+    assert!(matches!(manager.remove(&source), Err(Error::Database(_))));
+    assert!(source.join(".rift").exists());
+    assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[test]
 fn remove_runs_hooks_before_and_after_moving_workspace() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
@@ -1022,23 +1041,20 @@ fn unsafe_git_states_are_rejected_after_initialization() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn linked_git_worktree_source_is_rejected_after_initialization() {
+fn linked_git_directory_is_rejected_during_initialization() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
-    run(&source, &["init"]);
+    let external = temp.path().join("external-git");
+    fs::create_dir(&external).unwrap();
+    std::os::unix::fs::symlink(&external, source.join(".git")).unwrap();
     let mut manager = manager(&temp);
-    manager.init(&source).unwrap();
-    fs::remove_dir_all(source.join(".git")).unwrap();
-    fs::write(source.join(".git"), "gitdir: ../linked/.git").unwrap();
 
-    let error = manager
-        .create(Create::new(source.clone()).named("linked-worktree"))
-        .unwrap_err();
+    let error = manager.init(&source).unwrap_err();
 
     assert!(matches!(error, Error::UnsafeGit(message) if message.contains("linked")));
-    assert!(!child_path(&source, "linked-worktree").exists());
-    assert!(manager.list(&source).unwrap().is_empty());
+    assert!(!external.join("info/exclude").exists());
 }
 
 struct PartialFailureStrategy;
@@ -1051,6 +1067,34 @@ impl Strategy for PartialFailureStrategy {
         fs::write(to.join("nested/file.txt"), "partial")?;
         Err(Error::CowUnavailable("partial failure".into()))
     }
+}
+
+struct CollisionStrategy;
+
+impl Strategy for CollisionStrategy {
+    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
+        fs::create_dir(to)?;
+        TestStrategy.copy_directory(from, to, mode)
+    }
+}
+
+#[test]
+fn create_collision_does_not_remove_the_existing_destination() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = Manager::with_strategy(
+        temp.path().join("registry.sqlite"),
+        Box::new(CollisionStrategy),
+    )
+    .unwrap();
+    manager.init(&source).unwrap();
+    let destination = child_path(&source, "same");
+
+    assert!(matches!(
+        manager.create(Create::new(source).named("same")),
+        Err(Error::AlreadyExists(_))
+    ));
+    assert!(destination.exists());
 }
 
 #[test]

@@ -241,6 +241,9 @@ fn btrfs_path_ioctl(
     if request == BTRFS_IOC_SNAP_DESTROY {
         return Err(Error::Io(error));
     }
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return Err(Error::AlreadyExists(path.to_path_buf()));
+    }
     Err(Error::CowUnavailable(format!(
         "failed to {action} {}: {error}",
         path.display()

@@ -1,4 +1,4 @@
-use super::{Strategy, StrategyInit, create_directory};
+use super::{Strategy, StrategyInit, create_destination};
 use crate::{CopyMode, Error, InitProgress, Result, filter::CopyFilter};
 use std::fs;
 use std::path::Path;
@@ -43,13 +43,13 @@ fn same_filesystem_parent<'a>(from: &Path, to: &'a Path) -> Result<&'a Path> {
 }
 
 pub(super) fn clone_directory_linux(from: &Path, to: &Path) -> Result<()> {
-    create_directory(to)?;
+    create_destination(to)?;
     import_directory_linux(from, to, &mut |_| {})?;
     copy_metadata_linux(from, to, MetadataTarget::FileOrDirectory)
 }
 
 pub(super) fn clone_directory_linux_filtered(from: &Path, to: &Path) -> Result<()> {
-    create_directory(to)?;
+    create_destination(to)?;
     import_directory_linux_filtered(from, to, &mut |_| {})?;
     copy_metadata_linux(from, to, MetadataTarget::FileOrDirectory)
 }

@@ -31,7 +31,7 @@ pub(crate) trait Strategy {
     }
 }
 
-fn create_directory(path: &Path) -> Result<()> {
+fn create_destination(path: &Path) -> Result<()> {
     fs::create_dir(path).map_err(|error| match error.kind() {
         io::ErrorKind::AlreadyExists => crate::Error::AlreadyExists(path.to_path_buf()),
         _ => error.into(),
@@ -91,7 +91,7 @@ pub(crate) struct TestStrategy;
 #[cfg(test)]
 impl Strategy for TestStrategy {
     fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
-        create_directory(to)?;
+        create_destination(to)?;
         let filter = CopyFilter;
         for entry in walkdir::WalkDir::new(from)
             .min_depth(1)

@@ -1,4 +1,4 @@
-use super::{Strategy, create_directory};
+use super::{Strategy, create_destination};
 use crate::{CopyMode, Error, Result, filter::CopyFilter};
 use std::fs;
 use std::path::Path;
@@ -22,7 +22,7 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path) -> Result<()> {
     let filter = CopyFilter;
     let mut hard_links = HashMap::new();
     let mut directories = Vec::new();
-    create_directory(to)?;
+    create_destination(to)?;
     for entry in WalkDir::new(from)
         .min_depth(1)
         .follow_links(false)

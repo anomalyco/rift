@@ -437,6 +437,24 @@ fn removal_rejects_marker_mismatch_and_existing_trash_target() {
 }
 
 #[test]
+fn failed_root_unregister_keeps_the_marker() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let database = temp.path().join("registry.sqlite");
+    let mut manager = Manager::with_strategy(&database, Box::new(TestStrategy)).unwrap();
+    manager.init(&source).unwrap();
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER block_delete BEFORE DELETE ON rift BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+        )
+        .unwrap();
+
+    assert!(matches!(manager.remove(&source), Err(Error::Database(_))));
+    assert!(source.join(".rift").exists());
+}
+
+#[test]
 fn remove_runs_hooks_before_and_after_moving_workspace() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
@@ -1051,6 +1069,38 @@ impl Strategy for PartialFailureStrategy {
         fs::write(to.join("nested/file.txt"), "partial")?;
         Err(Error::CowUnavailable("partial failure".into()))
     }
+}
+
+struct CollisionStrategy;
+
+impl Strategy for CollisionStrategy {
+    fn copy_directory(&self, _from: &Path, to: &Path, _mode: CopyMode) -> Result<()> {
+        fs::create_dir(to)?;
+        fs::write(to.join("winner"), "kept")?;
+        Err(Error::AlreadyExists(to.to_path_buf()))
+    }
+}
+
+#[test]
+fn create_collision_does_not_remove_the_existing_destination() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = Manager::with_strategy(
+        temp.path().join("registry.sqlite"),
+        Box::new(CollisionStrategy),
+    )
+    .unwrap();
+    manager.init(&source).unwrap();
+    let destination = child_path(&source, "same");
+
+    assert!(matches!(
+        manager.create(Create::new(source).named("same")),
+        Err(Error::AlreadyExists(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(destination.join("winner")).unwrap(),
+        "kept"
+    );
 }
 
 #[test]

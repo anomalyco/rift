@@ -2,6 +2,7 @@ use crate::{CopyMode, InitProgress, Result};
 #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 use crate::{Error, filter::CopyFilter};
 use std::fs;
+use std::io;
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
@@ -28,6 +29,13 @@ pub(crate) trait Strategy {
         fs::remove_dir_all(path)?;
         Ok(())
     }
+}
+
+fn create_directory(path: &Path) -> Result<()> {
+    fs::create_dir(path).map_err(|error| match error.kind() {
+        io::ErrorKind::AlreadyExists => crate::Error::AlreadyExists(path.to_path_buf()),
+        _ => error.into(),
+    })
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -83,7 +91,7 @@ pub(crate) struct TestStrategy;
 #[cfg(test)]
 impl Strategy for TestStrategy {
     fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
-        fs::create_dir(to)?;
+        create_directory(to)?;
         let filter = CopyFilter;
         for entry in walkdir::WalkDir::new(from)
             .min_depth(1)

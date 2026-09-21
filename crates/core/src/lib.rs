@@ -265,7 +265,7 @@ impl Manager {
             .strategy
             .copy_directory(&from, &destination, options.copy_mode)
         {
-            if destination.exists() {
+            if !matches!(error, Error::AlreadyExists(_)) && destination.exists() {
                 let _ = self.strategy.remove_directory(&destination);
             }
             return Err(error);
@@ -455,8 +455,8 @@ impl Manager {
             .filter(|record| record.path.exists())
             .collect::<Vec<_>>();
         self.trash_rows(&existing)?;
-        fs::remove_file(marker::path(&record.path))?;
         self.registry.delete_active(&record.id)?;
+        fs::remove_file(marker::path(&record.path))?;
         Ok(())
     }
 

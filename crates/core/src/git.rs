@@ -56,7 +56,10 @@ pub(crate) fn hide_marker(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-    if existing.lines().any(|line| line.trim_end() == "/.rift") {
+    if existing
+        .lines()
+        .any(|line| line.trim_end_matches(' ') == "/.rift")
+    {
         return Ok(());
     }
     let separator = if existing.is_empty() || existing.ends_with('\n') {
@@ -115,17 +118,6 @@ mod tests {
             check_source(temp.path()),
             Err(Error::UnsafeGit(_))
         ));
-
-        #[cfg(unix)]
-        {
-            fs::remove_file(temp.path().join(".git")).unwrap();
-            let external = TempDir::new().unwrap();
-            std::os::unix::fs::symlink(external.path(), temp.path().join(".git")).unwrap();
-            assert!(matches!(
-                check_source(temp.path()),
-                Err(Error::UnsafeGit(_))
-            ));
-        }
     }
 
     #[test]

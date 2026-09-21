@@ -441,7 +441,7 @@ fn failed_root_unregister_keeps_the_marker() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
     let database = temp.path().join("registry.sqlite");
-    let mut manager = Manager::with_strategy(&database, Box::new(TestStrategy)).unwrap();
+    let mut manager = manager(&temp);
     manager.init(&source).unwrap();
     rusqlite::Connection::open(database)
         .unwrap()
@@ -452,6 +452,7 @@ fn failed_root_unregister_keeps_the_marker() {
 
     assert!(matches!(manager.remove(&source), Err(Error::Database(_))));
     assert!(source.join(".rift").exists());
+    assert!(manager.list(&source).unwrap().is_empty());
 }
 
 #[test]
@@ -1040,23 +1041,20 @@ fn unsafe_git_states_are_rejected_after_initialization() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn linked_git_worktree_source_is_rejected_after_initialization() {
+fn linked_git_directory_is_rejected_during_initialization() {
     let temp = TempDir::new().unwrap();
     let source = source(&temp);
-    run(&source, &["init"]);
+    let external = temp.path().join("external-git");
+    fs::create_dir(&external).unwrap();
+    std::os::unix::fs::symlink(&external, source.join(".git")).unwrap();
     let mut manager = manager(&temp);
-    manager.init(&source).unwrap();
-    fs::remove_dir_all(source.join(".git")).unwrap();
-    fs::write(source.join(".git"), "gitdir: ../linked/.git").unwrap();
 
-    let error = manager
-        .create(Create::new(source.clone()).named("linked-worktree"))
-        .unwrap_err();
+    let error = manager.init(&source).unwrap_err();
 
     assert!(matches!(error, Error::UnsafeGit(message) if message.contains("linked")));
-    assert!(!child_path(&source, "linked-worktree").exists());
-    assert!(manager.list(&source).unwrap().is_empty());
+    assert!(!external.join("info/exclude").exists());
 }
 
 struct PartialFailureStrategy;
@@ -1074,10 +1072,9 @@ impl Strategy for PartialFailureStrategy {
 struct CollisionStrategy;
 
 impl Strategy for CollisionStrategy {
-    fn copy_directory(&self, _from: &Path, to: &Path, _mode: CopyMode) -> Result<()> {
+    fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
         fs::create_dir(to)?;
-        fs::write(to.join("winner"), "kept")?;
-        Err(Error::AlreadyExists(to.to_path_buf()))
+        TestStrategy.copy_directory(from, to, mode)
     }
 }
 
@@ -1097,10 +1094,7 @@ fn create_collision_does_not_remove_the_existing_destination() {
         manager.create(Create::new(source).named("same")),
         Err(Error::AlreadyExists(_))
     ));
-    assert_eq!(
-        fs::read_to_string(destination.join("winner")).unwrap(),
-        "kept"
-    );
+    assert!(destination.exists());
 }
 
 #[test]

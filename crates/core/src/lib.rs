@@ -64,7 +64,7 @@ pub enum Error {
     NamesExhausted(PathBuf),
     #[error("cannot remove subtree while a recorded rift path is missing: {0}")]
     MissingRift(PathBuf),
-    #[error("rift destination overlaps a managed workspace: {0}")]
+    #[error("workspace path overlaps another managed workspace: {0}")]
     OverlappingWorkspace(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
@@ -228,8 +228,8 @@ impl Manager {
             Some(path) => absolute_path(&path)?,
             None => default_storage(&root.path)?,
         };
-        let active_paths = self.registry.active_paths()?;
-        if active_paths
+        let managed_paths = self.managed_paths()?;
+        if managed_paths
             .iter()
             .any(|record| destination_parent.starts_with(&record.path))
         {
@@ -247,7 +247,7 @@ impl Manager {
         if destination.exists() {
             return Err(Error::AlreadyExists(destination));
         }
-        if active_paths
+        if managed_paths
             .iter()
             .any(|record| paths_overlap(&destination, &record.path))
         {
@@ -337,6 +337,13 @@ impl Manager {
         }
         if marker::read(&at)?.is_some() {
             return Err(Error::MarkerMismatch(at));
+        }
+        if self
+            .managed_paths()?
+            .iter()
+            .any(|record| paths_overlap(&at, &record.path))
+        {
+            return Err(Error::OverlappingWorkspace(at));
         }
 
         let converted = self.strategy.initialize_directory(&at, &mut progress)?;
@@ -491,9 +498,9 @@ impl Manager {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let active_paths = self.registry.active_paths()?;
+        let managed_paths = self.managed_paths()?;
         for target in &targets {
-            if active_paths.iter().any(|record| {
+            if managed_paths.iter().any(|record| {
                 record.path != target.original_path
                     && paths_overlap(&target.original_path, &record.path)
             }) {
@@ -529,6 +536,12 @@ impl Manager {
             }
         }
         result
+    }
+
+    fn managed_paths(&self) -> Result<Vec<PathRecord>> {
+        let mut paths = self.registry.active_paths()?;
+        paths.extend(self.registry.trashed_paths()?);
+        Ok(paths)
     }
 
     pub fn list(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {

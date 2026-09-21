@@ -74,6 +74,12 @@ fn init_registers_a_root_workspace_without_creating_a_child() {
         manager.init(&source).unwrap(),
         InitOutcome::AlreadyInitialized
     );
+    let nested = source.join("nested");
+    fs::create_dir(&nested).unwrap();
+    assert!(matches!(
+        manager.init(&nested),
+        Err(Error::OverlappingWorkspace(_))
+    ));
 }
 
 #[test]
@@ -142,8 +148,18 @@ fn create_supports_custom_storage_and_rejects_invalid_destinations() {
         Err(Error::Path(_))
     ));
     assert!(matches!(
-        manager.create(Create::new(source).named(".trash")),
+        manager.create(Create::new(source.clone()).named(".trash")),
         Err(Error::Path(_))
+    ));
+    let trash = trash_path(&marker_id(&child), &child).unwrap();
+    manager.remove(&child).unwrap();
+    assert!(matches!(
+        manager.create(
+            Create::new(source)
+                .named("nested")
+                .with_storage(Some(trash.join("storage")))
+        ),
+        Err(Error::OverlappingWorkspace(_))
     ));
 }
 

@@ -17,10 +17,14 @@ impl Source {
 
 pub(crate) fn check_source(path: &Path) -> Result<Source> {
     let git = path.join(".git");
-    if !git.exists() {
-        return Ok(Source::PlainDirectory);
-    }
-    if !git.is_dir() {
+    let metadata = match fs::symlink_metadata(&git) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Source::PlainDirectory);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() {
         return Err(Error::UnsafeGit(
             "linked Git worktree sources are not supported".into(),
         ));
@@ -52,7 +56,7 @@ pub(crate) fn hide_marker(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-    if existing.lines().any(|line| line.trim() == "/.rift") {
+    if existing.lines().any(|line| line.trim_end() == "/.rift") {
         return Ok(());
     }
     let separator = if existing.is_empty() || existing.ends_with('\n') {
@@ -111,6 +115,17 @@ mod tests {
             check_source(temp.path()),
             Err(Error::UnsafeGit(_))
         ));
+
+        #[cfg(unix)]
+        {
+            fs::remove_file(temp.path().join(".git")).unwrap();
+            let external = TempDir::new().unwrap();
+            std::os::unix::fs::symlink(external.path(), temp.path().join(".git")).unwrap();
+            assert!(matches!(
+                check_source(temp.path()),
+                Err(Error::UnsafeGit(_))
+            ));
+        }
     }
 
     #[test]
@@ -143,6 +158,12 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join(".git/info/exclude")).unwrap(),
             "existing\n/.rift\n"
+        );
+        fs::write(temp.path().join(".git/info/exclude"), " /.rift\n").unwrap();
+        hide_marker(temp.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".git/info/exclude")).unwrap(),
+            " /.rift\n/.rift\n"
         );
     }
 

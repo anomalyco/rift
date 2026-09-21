@@ -64,8 +64,8 @@ pub enum Error {
     NamesExhausted(PathBuf),
     #[error("cannot remove subtree while a recorded rift path is missing: {0}")]
     MissingRift(PathBuf),
-    #[error("cannot copy a workspace into itself: {0}")]
-    InsideSource(PathBuf),
+    #[error("rift destination overlaps a managed workspace: {0}")]
+    OverlappingWorkspace(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
     #[error("{hook} hook failed at {path}: `{command}` {message}")]
@@ -228,8 +228,12 @@ impl Manager {
             Some(path) => absolute_path(&path)?,
             None => default_storage(&root.path)?,
         };
-        if destination_parent.starts_with(&from) {
-            return Err(Error::InsideSource(destination_parent));
+        let active_paths = self.registry.active_paths()?;
+        if active_paths
+            .iter()
+            .any(|record| destination_parent.starts_with(&record.path))
+        {
+            return Err(Error::OverlappingWorkspace(destination_parent));
         }
         fs::create_dir_all(&destination_parent)?;
         let destination_parent = fs::canonicalize(destination_parent)?;
@@ -240,11 +244,14 @@ impl Manager {
                 .ok_or_else(|| Error::NamesExhausted(destination_parent.clone()))?,
         };
         let destination = destination_parent.join(name.as_str());
-        if destination.starts_with(&from) {
-            return Err(Error::InsideSource(destination));
-        }
         if destination.exists() {
             return Err(Error::AlreadyExists(destination));
+        }
+        if active_paths
+            .iter()
+            .any(|record| paths_overlap(&destination, &record.path))
+        {
+            return Err(Error::OverlappingWorkspace(destination));
         }
         let config = match options.hook_mode {
             HookMode::Run => config::Config::load(&from)?,
@@ -484,6 +491,15 @@ impl Manager {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let active_paths = self.registry.active_paths()?;
+        for target in &targets {
+            if active_paths.iter().any(|record| {
+                record.path != target.original_path
+                    && paths_overlap(&target.original_path, &record.path)
+            }) {
+                return Err(Error::OverlappingWorkspace(target.original_path.clone()));
+            }
+        }
         targets.iter().try_for_each(|target| {
             (!target.trash_path.exists())
                 .then_some(())
@@ -637,6 +653,10 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
     Ok(std::env::current_dir()?.join(path))
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn default_storage(root: &Path) -> Result<PathBuf> {

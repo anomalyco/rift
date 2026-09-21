@@ -108,6 +108,14 @@ fn create_supports_custom_storage_and_rejects_invalid_destinations() {
     assert!(matches!(
         manager.create(
             Create::new(source.clone())
+                .named("nested")
+                .with_storage(Some(child.join("storage")))
+        ),
+        Err(Error::OverlappingWorkspace(_))
+    ));
+    assert!(matches!(
+        manager.create(
+            Create::new(source.clone())
                 .named("custom")
                 .with_storage(Some(custom))
         ),
@@ -123,7 +131,7 @@ fn create_supports_custom_storage_and_rejects_invalid_destinations() {
                 .named("inside")
                 .with_storage(Some(source.join("nested")))
         ),
-        Err(Error::InsideSource(_))
+        Err(Error::OverlappingWorkspace(_))
     ));
     assert!(matches!(
         manager.create(Create::new(source.join("file.txt")).named("file")),
@@ -778,6 +786,37 @@ fn remove_all_deletes_descendants_and_preserves_the_selected_workspace() {
     assert!(!first.exists());
     assert!(first_trash.exists());
     assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[test]
+fn remove_rejects_overlapping_registered_paths_before_moving() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let container = manager
+        .create(Create::new(source.clone()).named("container"))
+        .unwrap();
+    let nested = container.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    let nested_id = RiftId::new();
+    marker::write(&nested, &nested_id).unwrap();
+    let source_id = marker_id(&source);
+    manager
+        .registry
+        .insert_child(&nested_id, &source_id, &nested)
+        .unwrap();
+
+    assert!(matches!(
+        manager.remove(&container),
+        Err(Error::OverlappingWorkspace(_))
+    ));
+    assert!(nested.exists());
+    assert!(matches!(
+        manager.remove_all(&source),
+        Err(Error::OverlappingWorkspace(_))
+    ));
+    assert!(nested.exists());
 }
 
 #[test]

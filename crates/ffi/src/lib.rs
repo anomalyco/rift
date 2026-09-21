@@ -93,7 +93,7 @@ impl From<Error> for Failure {
             Error::AlreadyExists(path) => ("already_exists", Some(path.clone())),
             Error::NamesExhausted(path) => ("names_exhausted", Some(path.clone())),
             Error::MissingRift(path) => ("missing_rift", Some(path.clone())),
-            Error::InsideSource(path) => ("inside_source", Some(path.clone())),
+            Error::OverlappingWorkspace(path) => ("inside_source", Some(path.clone())),
             Error::InvalidConfig { path, .. } => ("invalid_config", Some(path.clone())),
             Error::HookFailed { path, .. } => ("hook_failed", Some(path.clone())),
         };

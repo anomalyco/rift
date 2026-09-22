@@ -28,9 +28,11 @@ New workspaces created by OpenCode will now use Rift. Existing workspaces keep t
 
 The plugin exposes three Code Mode tools:
 
-- `rift.create` snapshots the current session workspace and moves the session into it by default.
+- `rift.create` snapshots the current session workspace.
 - `rift.list` refreshes and lists Rift workspaces for the current project.
-- `rift.remove` removes a Rift workspace and moves a session to an unmanaged project checkout when needed.
+- `rift.remove` removes a Rift workspace after the current session has moved out of it.
+
+Use OpenCode's `opencode.session_move` tool to move sessions between the original checkout and Rift workspaces.
 
 Rift runs as a cancellable child process, so lifecycle hooks do not block the OpenCode server. Hook output and failures
 are written to the OpenCode server's stderr. Failures after a completed filesystem operation are reconciled with

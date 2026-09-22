@@ -14,13 +14,11 @@ export async function registerTools(ctx: Context) {
     })
     editor.add({
       name: "create",
-      description:
-        "Create a Rift worktree from the current session and move this session into it at the next safe boundary.",
+      description: "Create a Rift worktree from the current session's workspace.",
       input: {
         type: "object",
         properties: {
           name: { type: "string", description: "Optional workspace name." },
-          move: { type: "boolean", description: "Move the current session into the new workspace. Defaults to true." },
         },
         additionalProperties: false,
       },
@@ -34,7 +32,7 @@ export async function registerTools(ctx: Context) {
       },
       options: { namespace: "rift", codemode: true, pinned: true },
       async execute(input, tool) {
-        const value = input as { name?: string; move?: boolean }
+        const value = input as { name?: string }
         const session = await ctx.session.get({ sessionID: tool.sessionID })
         const inventory = await ctx.worktree.list({ projectID: session.projectID })
         const source = inventory
@@ -46,22 +44,9 @@ export async function registerTools(ctx: Context) {
           from: source.directory,
           name: value.name,
         })
-        let moveError: unknown
-        if (value.move !== false)
-          await ctx.session
-            .move({
-              sessionID: session.id,
-              directory: created.directory,
-              delivery: "steer",
-            })
-            .catch((error) => {
-              moveError = error
-            })
         return {
           output: { directory: created.directory },
-          content: moveError
-            ? `Created ${created.directory}, but could not move this session: ${moveError instanceof Error ? moveError.message : String(moveError)}`
-            : `Created ${created.directory}${value.move === false ? "." : " and scheduled this session to move there."}`,
+          content: `Created ${created.directory}. Use opencode.session_move to move a session into it.`,
         }
       },
     })
@@ -121,17 +106,8 @@ export async function registerTools(ctx: Context) {
       async execute(input, tool) {
         const value = input as { directory: string }
         const session = await ctx.session.get({ sessionID: tool.sessionID })
-        if (contains(value.directory, session.location.directory)) {
-          const inventory = await ctx.worktree.list({ projectID: session.projectID })
-          const destination =
-            inventory.find((entry) => entry.strategy === undefined && entry.directory !== value.directory)?.directory ??
-            ctx.location.project.canonical
-          await ctx.session.move({
-            sessionID: session.id,
-            directory: destination,
-            delivery: "steer",
-          })
-        }
+        if (contains(value.directory, session.location.directory))
+          throw new Error("Move this session out of the Rift before removing it")
         await ctx.worktree.remove({
           projectID: session.projectID,
           directory: value.directory,

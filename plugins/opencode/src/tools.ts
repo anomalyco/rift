@@ -10,11 +10,11 @@ export async function registerTools(ctx: Context) {
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "rift",
-      description: "Create, inspect, and remove Rift-backed OpenCode worktrees.",
+      description: "Create, inspect, and remove Rift workspaces for the current OpenCode project.",
     })
     editor.add({
       name: "create",
-      description: "Create a Rift worktree from the current session's workspace.",
+      description: "Create a Rift workspace from the current session's workspace.",
       input: {
         type: "object",
         properties: {
@@ -52,12 +52,12 @@ export async function registerTools(ctx: Context) {
     })
     editor.add({
       name: "list",
-      description: "Refresh and list Rift-backed worktrees for the current project.",
+      description: "Refresh and list Rift workspaces for the current project.",
       input: { type: "object", properties: {}, additionalProperties: false },
       output: {
         type: "object",
         properties: {
-          worktrees: {
+          workspaces: {
             type: "array",
             items: {
               type: "object",
@@ -67,27 +67,27 @@ export async function registerTools(ctx: Context) {
             },
           },
         },
-        required: ["worktrees"],
+        required: ["workspaces"],
         additionalProperties: false,
       },
       options: { namespace: "rift", codemode: true },
       async execute(_input, tool) {
         const session = await ctx.session.get({ sessionID: tool.sessionID })
         await ctx.worktree.refresh({ projectID: session.projectID })
-        const worktrees = (await ctx.worktree.list({ projectID: session.projectID }))
+        const workspaces = (await ctx.worktree.list({ projectID: session.projectID }))
           .filter((entry) => entry.strategy === "rift")
           .map((entry) => ({ directory: entry.directory }))
         return {
-          output: { worktrees },
-          content: worktrees.length
-            ? worktrees.map((entry) => entry.directory).join("\n")
-            : "No Rift worktrees found for this project.",
+          output: { workspaces },
+          content: workspaces.length
+            ? workspaces.map((entry) => entry.directory).join("\n")
+            : "No Rift workspaces found for this project.",
         }
       },
     })
     editor.add({
       name: "remove",
-      description: "Remove a Rift-backed worktree from the current project.",
+      description: "Remove a Rift workspace from the current project.",
       input: {
         type: "object",
         properties: {

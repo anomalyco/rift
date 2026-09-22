@@ -1,7 +1,7 @@
 {
   "name": "opencode-plugin-rift",
   "version": "0.0.12",
-  "description": "Use Rift snapshots as OpenCode worktrees",
+  "description": "Use Rift workspaces as the OpenCode worktree backend",
   "type": "module",
   "license": "MIT",
   "repository": {

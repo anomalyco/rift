@@ -24,7 +24,7 @@ function fixture() {
 
 const context = { signal: new AbortController().signal }
 
-describe("Rift worktree strategy", () => {
+describe("Rift workspace strategy", () => {
   test("validates plugin options", () => {
     expect(() => makeStrategy({ executable: "" })).toThrow("non-empty")
     expect(() => makeStrategy({ copyAll: "yes" })).toThrow("boolean")

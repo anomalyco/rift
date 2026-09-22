@@ -3,7 +3,7 @@ import { makeStrategy } from "./strategy.js"
 import { registerTools } from "./tools.js"
 
 export default Plugin.define({
-  id: "rift.worktrees",
+  id: "rift.workspaces",
   async setup(ctx) {
     const strategy = makeStrategy(ctx.options, {
       warning: ({ directory, message }) => {

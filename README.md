@@ -59,7 +59,7 @@ run = "docker compose -p rift-$RIFT_ID up -d"
 run = "docker compose -p rift-$RIFT_ID down -v"
 ```
 
-OpenCode can use Rift directly through the [OpenCode plugin](#opencode): its workspace UI creates Rift snapshots, and
+OpenCode can use Rift directly through the [OpenCode plugin](#opencode): its workspace UI creates Rift workspaces, and
 agents get `rift.create`, `rift.list`, and `rift.remove` Code Mode tools.
 
 ## Platforms
@@ -166,7 +166,7 @@ The shell wrapper changes directory after `init` conversion, `create`, or remova
 
 ## OpenCode
 
-Use Rift as the worktree backend in OpenCode V2:
+Use Rift workspaces as the worktree backend in OpenCode V2:
 
 ```sh
 opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
@@ -181,7 +181,7 @@ Or configure it manually:
 }
 ```
 
-Run `rift init` once in the project root. OpenCode's worktree UI and API will then create and manage Rift snapshots.
+Run `rift init` once in the project root. OpenCode's worktree UI and API will then create and manage Rift workspaces.
 Agents can use the plugin's Code Mode tools to manage snapshots and OpenCode's session tools to move between them. See
 [`plugins/opencode`](plugins/opencode) for options and limitations.
 

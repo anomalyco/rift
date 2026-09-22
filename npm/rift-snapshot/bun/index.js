@@ -39,11 +39,13 @@ function call(request) {
 }
 
 export class RiftError extends Error {
-  constructor({ code, message, path }) {
+  constructor({ code, message, path, hook, committed }) {
     super(message)
     this.name = "RiftError"
     this.code = code
     this.path = path
+    this.hook = hook
+    this.committed = committed
   }
 }
 

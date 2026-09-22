@@ -6,6 +6,7 @@ mod id;
 mod marker;
 mod name;
 mod registry;
+pub mod rpc;
 mod strategy;
 
 #[cfg(all(test, target_os = "linux"))]

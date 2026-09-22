@@ -727,8 +727,6 @@ name = "rift-ffi"
 version = "0.0.11"
 dependencies = [
  "rift",
- "serde",
- "serde_json",
 ]
 
 [[package]]

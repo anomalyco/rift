@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use rift::{CopyMode, Create, CreateOptions, HookMode, InitProgress, Manager, RemoveOptions};
+use std::io::Read;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -83,6 +84,8 @@ impl Shell {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Rpc,
     ShellInit {
         #[arg(value_enum)]
         shell: Shell,
@@ -150,6 +153,12 @@ fn error_message(error: &rift::Error) -> String {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
+        Command::Rpc => {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            print!("{}", rift::rpc::call(&input));
+            return Ok(());
+        }
         Command::ShellInit { shell } => {
             print_shell_init(shell);
             return Ok(());
@@ -161,6 +170,7 @@ fn run() -> Result<()> {
         None => Manager::open_default()?,
     };
     match command {
+        Command::Rpc => unreachable!(),
         Command::ShellInit { shell } => {
             print_shell_init(shell);
             Ok(())

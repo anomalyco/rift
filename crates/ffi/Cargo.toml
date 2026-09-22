@@ -9,5 +9,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rift = { path = "../core" }
-serde.workspace = true
-serde_json.workspace = true

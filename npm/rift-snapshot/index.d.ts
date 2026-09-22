@@ -50,7 +50,15 @@ export type RiftErrorCode =
 export class RiftError extends Error {
   code: RiftErrorCode
   path?: string
-  constructor(input: { code: RiftErrorCode; message: string; path?: string })
+  hook?: "precreate" | "postcreate" | "preremove" | "postremove"
+  committed?: boolean
+  constructor(input: {
+    code: RiftErrorCode
+    message: string
+    path?: string
+    hook?: "precreate" | "postcreate" | "preremove" | "postremove"
+    committed?: boolean
+  })
 }
 
 export function init(options?: AtOptions): null

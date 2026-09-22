@@ -6,6 +6,7 @@ mod id;
 mod marker;
 mod name;
 mod registry;
+pub mod rpc;
 mod strategy;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -547,6 +548,16 @@ impl Manager {
     pub fn list(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         let record = self.workspace_at(of)?;
         self.registry.child_paths(&record.id)
+    }
+
+    pub fn descendants(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let record = self.workspace_at(of)?;
+        Ok(self
+            .registry
+            .subtree(&record.id, SubtreeScope::DescendantsOnly)?
+            .into_iter()
+            .map(|record| record.path)
+            .collect())
     }
 
     pub fn ancestors(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {

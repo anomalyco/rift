@@ -1,0 +1,27 @@
+{
+  "name": "opencode-plugin-rift",
+  "version": "0.0.1",
+  "description": "Use Rift snapshots as OpenCode worktrees",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anomalyco/rift.git",
+    "directory": "plugins/opencode"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}

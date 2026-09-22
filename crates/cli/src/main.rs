@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use rift::{CopyMode, Create, CreateOptions, HookMode, InitProgress, Manager, RemoveOptions};
+use std::io::Read;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -83,6 +84,8 @@ impl Shell {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Rpc,
     ShellInit {
         #[arg(value_enum)]
         shell: Shell,
@@ -150,6 +153,21 @@ fn error_message(error: &rift::Error) -> String {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
+        Command::Rpc => {
+            const LIMIT: u64 = 1024 * 1024;
+            let mut input = Vec::new();
+            std::io::stdin().take(LIMIT + 1).read_to_end(&mut input)?;
+            let output = if input.len() as u64 > LIMIT {
+                rift::rpc::error("invalid_request", "RPC request exceeds 1 MiB")
+            } else {
+                match String::from_utf8(input) {
+                    Ok(input) => rift::rpc::call(&input),
+                    Err(error) => rift::rpc::error("invalid_request", error.to_string()),
+                }
+            };
+            print!("{output}");
+            return Ok(());
+        }
         Command::ShellInit { shell } => {
             print_shell_init(shell);
             return Ok(());
@@ -161,6 +179,7 @@ fn run() -> Result<()> {
         None => Manager::open_default()?,
     };
     match command {
+        Command::Rpc => unreachable!(),
         Command::ShellInit { shell } => {
             print_shell_init(shell);
             Ok(())

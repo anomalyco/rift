@@ -124,6 +124,27 @@ rift shell-init nushell | save -f (($nu.user-autoload-dirs | first) | path join 
 
 The shell wrapper changes directory after `init` conversion, `create`, or removal of the current created rift.
 
+## OpenCode
+
+Use Rift as the worktree backend in OpenCode V2:
+
+```sh
+opencode plugin add 'github:anomalyco/rift#dev::path:plugins/opencode'
+```
+
+Or configure it manually:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["github:anomalyco/rift#dev::path:plugins/opencode"]
+}
+```
+
+Run `rift init` once in the project root. OpenCode's worktree UI and API will then create and manage Rift snapshots.
+Agents can use the plugin's Code Mode tools to manage snapshots and OpenCode's session tools to move between them. See
+[`plugins/opencode`](plugins/opencode) for options and limitations.
+
 ## Storage
 
 Each managed workspace has a `.rift` marker containing its identifier. An SQLite registry stores paths, parent identifiers, and trash entries.

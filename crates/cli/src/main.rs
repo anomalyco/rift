@@ -154,9 +154,18 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
         Command::Rpc => {
-            let mut input = String::new();
-            std::io::stdin().read_to_string(&mut input)?;
-            print!("{}", rift::rpc::call(&input));
+            const LIMIT: u64 = 1024 * 1024;
+            let mut input = Vec::new();
+            std::io::stdin().take(LIMIT + 1).read_to_end(&mut input)?;
+            let output = if input.len() as u64 > LIMIT {
+                rift::rpc::error("invalid_request", "RPC request exceeds 1 MiB")
+            } else {
+                match String::from_utf8(input) {
+                    Ok(input) => rift::rpc::call(&input),
+                    Err(error) => rift::rpc::error("invalid_request", error.to_string()),
+                }
+            };
+            print!("{output}");
             return Ok(());
         }
         Command::ShellInit { shell } => {

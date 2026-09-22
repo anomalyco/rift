@@ -48,6 +48,11 @@ export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runti
   }
   const committed = (error: unknown, hook: string) =>
     error instanceof RpcError && error.committed === true && error.hook === hook && error.path
+  const paths = (value: unknown) => {
+    if (!Array.isArray(value) || value.some((path) => typeof path !== "string"))
+      throw new Worktree.OperationError({ message: "Rift returned invalid paths" })
+    return value as string[]
+  }
 
   return {
     id: "rift",
@@ -75,11 +80,11 @@ export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runti
       }
     },
     async remove(input: { directory: string; force: boolean }, context: { signal: AbortSignal }) {
-      const children = await request({ command: "list", of: input.directory }, context.signal).catch((error) => {
-        throw failure(error)
-      })
-      if (!Array.isArray(children) || children.some((child) => typeof child !== "string"))
-        throw new Worktree.OperationError({ message: "Rift list returned invalid paths" })
+      const children = paths(
+        await request({ command: "list", of: input.directory }, context.signal).catch((error) => {
+          throw failure(error)
+        }),
+      )
       if (children.length)
         throw new Worktree.OperationError({ message: "Remove this Rift's child workspaces first" })
       try {
@@ -90,29 +95,16 @@ export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runti
       }
     },
     async list(sourceDirectory: string, context: { signal: AbortSignal }) {
-      const entries: Array<{ directory: string; type: "root" | "worktree" }> = []
-      const queue = [sourceDirectory]
-      const seen = new Set(queue)
-      while (queue.length) {
-        const directory = queue.shift()!
-        let children: unknown
-        try {
-          children = await request({ command: "list", of: directory }, context.signal)
-        } catch (error) {
-          if (directory === sourceDirectory && error instanceof RpcError && error.code === "workspace_not_initialized")
-            return []
-          throw failure(error)
-        }
-        if (!Array.isArray(children) || children.some((child) => typeof child !== "string"))
-          throw new Worktree.OperationError({ message: "Rift list returned invalid paths" })
-        entries.push({ directory, type: directory === sourceDirectory ? "root" : "worktree" })
-        for (const child of children) {
-          if (seen.has(child)) continue
-          seen.add(child)
-          queue.push(child)
-        }
+      try {
+        const descendants = paths(await request({ command: "descendants", of: sourceDirectory }, context.signal))
+        return [
+          { directory: sourceDirectory, type: "root" as const },
+          ...descendants.map((directory) => ({ directory, type: "worktree" as const })),
+        ]
+      } catch (error) {
+        if (error instanceof RpcError && error.code === "workspace_not_initialized") return []
+        throw failure(error)
       }
-      return entries
     },
   }
 }

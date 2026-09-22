@@ -1,6 +1,12 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
+import path from "node:path"
 
-export async function registerTools(ctx: Context, warnings: Map<string, string>) {
+function contains(parent: string, child: string) {
+  const relative = path.relative(parent, child)
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+export async function registerTools(ctx: Context) {
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "rift",
@@ -22,7 +28,6 @@ export async function registerTools(ctx: Context, warnings: Map<string, string>)
         type: "object",
         properties: {
           directory: { type: "string" },
-          warning: { type: "string" },
         },
         required: ["directory"],
         additionalProperties: false,
@@ -31,24 +36,31 @@ export async function registerTools(ctx: Context, warnings: Map<string, string>)
       async execute(input, tool) {
         const value = input as { name?: string; move?: boolean }
         const session = await ctx.session.get({ sessionID: tool.sessionID })
+        const inventory = await ctx.worktree.list({ projectID: session.projectID })
+        const source = inventory
+          .filter((entry) => contains(entry.directory, session.location.directory))
+          .toSorted((left, right) => right.directory.length - left.directory.length)[0]
+        if (!source) throw new Error(`Current session is not inside a known workspace: ${session.location.directory}`)
         const created = await ctx.worktree.create({
           projectID: session.projectID,
-          from: session.location.directory,
+          from: source.directory,
           name: value.name,
         })
-        if (value.move !== false) {
-          await ctx.session.move({
-            sessionID: session.id,
-            directory: created.directory,
-            delivery: "steer",
-          })
-        }
-        const warning = warnings.get(created.directory)
-        warnings.delete(created.directory)
+        let moveError: unknown
+        if (value.move !== false)
+          await ctx.session
+            .move({
+              sessionID: session.id,
+              directory: created.directory,
+              delivery: "steer",
+            })
+            .catch((error) => {
+              moveError = error
+            })
         return {
-          output: warning ? { directory: created.directory, warning } : { directory: created.directory },
-          content: warning
-            ? `Created ${created.directory}, but a Rift lifecycle hook failed: ${warning}`
+          output: { directory: created.directory },
+          content: moveError
+            ? `Created ${created.directory}, but could not move this session: ${moveError instanceof Error ? moveError.message : String(moveError)}`
             : `Created ${created.directory}${value.move === false ? "." : " and scheduled this session to move there."}`,
         }
       },
@@ -95,22 +107,21 @@ export async function registerTools(ctx: Context, warnings: Map<string, string>)
         type: "object",
         properties: {
           directory: { type: "string", description: "Absolute workspace path." },
-          force: { type: "boolean", description: "Confirm a force-required removal. Defaults to false." },
         },
         required: ["directory"],
         additionalProperties: false,
       },
       output: {
         type: "object",
-        properties: { directory: { type: "string" }, warning: { type: "string" } },
+        properties: { directory: { type: "string" } },
         required: ["directory"],
         additionalProperties: false,
       },
       options: { namespace: "rift", codemode: true },
       async execute(input, tool) {
-        const value = input as { directory: string; force?: boolean }
+        const value = input as { directory: string }
         const session = await ctx.session.get({ sessionID: tool.sessionID })
-        if (session.location.directory === value.directory) {
+        if (contains(value.directory, session.location.directory)) {
           const inventory = await ctx.worktree.list({ projectID: session.projectID })
           const destination =
             inventory.find((entry) => entry.strategy === undefined && entry.directory !== value.directory)?.directory ??
@@ -124,15 +135,11 @@ export async function registerTools(ctx: Context, warnings: Map<string, string>)
         await ctx.worktree.remove({
           projectID: session.projectID,
           directory: value.directory,
-          force: value.force ?? false,
+          force: false,
         })
-        const warning = warnings.get(value.directory)
-        warnings.delete(value.directory)
         return {
-          output: warning ? { directory: value.directory, warning } : { directory: value.directory },
-          content: warning
-            ? `Removed ${value.directory}, but a Rift lifecycle hook failed: ${warning}`
-            : `Removed ${value.directory}.`,
+          output: { directory: value.directory },
+          content: `Removed ${value.directory}.`,
         }
       },
     })

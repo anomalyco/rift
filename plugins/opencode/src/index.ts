@@ -5,14 +5,12 @@ import { registerTools } from "./tools.js"
 export default Plugin.define({
   id: "rift.worktrees",
   async setup(ctx) {
-    const warnings = new Map<string, string>()
     const strategy = makeStrategy(ctx.options, {
       warning: ({ directory, message }) => {
-        warnings.set(directory, message)
         console.error(`Rift lifecycle hook failed for ${directory}: ${message}`)
       },
     })
     await ctx.worktree.transform((editor) => editor.add(strategy))
-    await registerTools(ctx, warnings)
+    await registerTools(ctx)
   },
 })

@@ -31,6 +31,9 @@ enum Command {
     List {
         of: PathBuf,
     },
+    Descendants {
+        of: PathBuf,
+    },
     Ancestors {
         of: PathBuf,
     },
@@ -197,6 +200,10 @@ fn execute(input: &str) -> Result<Value, Failure> {
             }
         }
         Command::List { of } => manager.list(of).map(Value::Paths).map_err(Failure::from),
+        Command::Descendants { of } => manager
+            .descendants(of)
+            .map(Value::Paths)
+            .map_err(Failure::from),
         Command::Ancestors { of } => manager
             .ancestors(of)
             .map(Value::Paths)
@@ -211,21 +218,28 @@ mod tests {
 
     #[test]
     fn serializes_errors_with_structured_hook_state() {
-        let response = serde_json::to_value(Response::Error {
-            error: Error::HookFailed {
-                hook: "postcreate".into(),
-                path: PathBuf::from("/tmp/app"),
-                command: "exit 1".into(),
-                message: "exited with 1".into(),
-            }
-            .into(),
-        })
-        .unwrap();
+        for (hook, committed) in [
+            ("precreate", false),
+            ("postcreate", true),
+            ("preremove", false),
+            ("postremove", true),
+        ] {
+            let response = serde_json::to_value(Response::Error {
+                error: Error::HookFailed {
+                    hook: hook.into(),
+                    path: PathBuf::from("/tmp/app"),
+                    command: "exit 1".into(),
+                    message: "exited with 1".into(),
+                }
+                .into(),
+            })
+            .unwrap();
 
-        assert_eq!(response["error"]["code"], "hook_failed");
-        assert_eq!(response["error"]["path"], "/tmp/app");
-        assert_eq!(response["error"]["hook"], "postcreate");
-        assert_eq!(response["error"]["committed"], true);
+            assert_eq!(response["error"]["code"], "hook_failed");
+            assert_eq!(response["error"]["path"], "/tmp/app");
+            assert_eq!(response["error"]["hook"], hook);
+            assert_eq!(response["error"]["committed"], committed);
+        }
     }
 
     #[test]

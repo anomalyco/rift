@@ -550,6 +550,16 @@ impl Manager {
         self.registry.child_paths(&record.id)
     }
 
+    pub fn descendants(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let record = self.workspace_at(of)?;
+        Ok(self
+            .registry
+            .subtree(&record.id, SubtreeScope::DescendantsOnly)?
+            .into_iter()
+            .map(|record| record.path)
+            .collect())
+    }
+
     pub fn ancestors(&self, of: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         let record = self.workspace_at(of)?;
         let mut paths = Vec::new();

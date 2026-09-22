@@ -14,6 +14,7 @@ function fixture() {
     if (!("command" in request)) throw new Error("missing command")
     if (request.command === "create" && "into" in request && "name" in request)
       return `${request.into}/${request.name}`
+    if (request.command === "descendants") return ["/rifts/two", "/rifts/one"]
     if (request.command === "list" && "of" in request && typeof request.of === "string")
       return children.get(request.of) ?? []
     return null
@@ -54,8 +55,8 @@ describe("Rift worktree strategy", () => {
     const { calls, children, strategy } = fixture()
     await expect(strategy.list("/project", context)).resolves.toEqual([
       { directory: "/project", type: "root" },
-      { directory: "/rifts/one", type: "worktree" },
       { directory: "/rifts/two", type: "worktree" },
+      { directory: "/rifts/one", type: "worktree" },
     ])
     await expect(strategy.remove({ directory: "/rifts/one", force: true }, context)).rejects.toThrow(
       "Remove this Rift's child workspaces first",
@@ -85,6 +86,14 @@ describe("Rift worktree strategy", () => {
               hook: "postcreate",
               committed: true,
             })
+          if ("command" in request && request.command === "remove")
+            throw new RpcError({
+              code: "hook_failed",
+              message: "postremove failed",
+              path: "/rifts/.trash/task",
+              hook: "postremove",
+              committed: true,
+            })
           return []
         },
       },
@@ -93,6 +102,10 @@ describe("Rift worktree strategy", () => {
     await expect(
       strategy.create({ sourceDirectory: "/project", directory: "/worktrees/task" }, context),
     ).resolves.toEqual({ directory: "/worktrees/task" })
-    expect(warnings).toEqual([{ directory: "/worktrees/task", message: "postcreate failed" }])
+    await strategy.remove({ directory: "/worktrees/task", force: false }, context)
+    expect(warnings).toEqual([
+      { directory: "/worktrees/task", message: "postcreate failed" },
+      { directory: "/worktrees/task", message: "postremove failed" },
+    ])
   })
 })

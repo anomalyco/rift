@@ -1,0 +1,6 @@
+{
+  "name": "rift-repo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root manifest so npm can install packages from repository subdirectories"
+}

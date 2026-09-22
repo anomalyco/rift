@@ -23,6 +23,30 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+  opencode-plugin-test:
+    name: OpenCode plugin
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/opencode
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --ignore-scripts
+
+      - name: Run tests
+        run: bun test
+
+      - name: Typecheck
+        run: bun run typecheck
+
   linux-filesystem-test:
     name: Linux filesystem tests (${{ matrix.filesystem }})
     runs-on: ubuntu-latest

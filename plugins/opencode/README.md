@@ -24,6 +24,17 @@ opencode plugin add 'github:anomalyco/rift#dev::path:plugins/opencode'
 
 New workspaces created by OpenCode will now use Rift. Existing workspaces keep the backend that created them.
 
+## Agent workspaces
+
+The plugin exposes three Code Mode tools:
+
+- `rift.create` snapshots the current session workspace and moves the session into it by default.
+- `rift.list` refreshes and lists Rift workspaces for the current project.
+- `rift.remove` removes a Rift workspace and moves a session back to the canonical checkout when needed.
+
+Rift runs as a cancellable child process, so lifecycle hooks do not block the OpenCode server. Hook output is forwarded
+to OpenCode, and failures after a completed filesystem operation are reconciled with OpenCode's inventory.
+
 ## Exact snapshots
 
 Rift normally leaves out regenerable directories such as `node_modules`, build outputs, and caches. OpenCode can run
@@ -43,7 +54,7 @@ Set `copyAll` when you want an exact snapshot instead:
 }
 ```
 
-Use `database` to point the plugin at a non-default Rift registry.
+Use `executable` to select a non-default Rift binary and `database` to point the plugin at a non-default Rift registry.
 
 Rift lifecycle hooks run by default. This lets projects validate before creation, prepare dependencies or infrastructure
 after creation, and clean up external resources around removal. Set `"hooks": false` in the plugin options when

@@ -142,7 +142,8 @@ Or configure it manually:
 ```
 
 Run `rift init` once in the project root. OpenCode's worktree UI and API will then create and manage Rift snapshots.
-See [`plugins/opencode`](plugins/opencode) for options and limitations.
+Agents can use the plugin's Code Mode tools to create a snapshot and move their session into it. See
+[`plugins/opencode`](plugins/opencode) for options and limitations.
 
 ## Storage
 

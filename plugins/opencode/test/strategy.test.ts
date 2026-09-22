@@ -1,38 +1,35 @@
 import { describe, expect, test } from "bun:test"
+import { RpcError } from "../src/command.js"
 import { makeStrategy } from "../src/strategy.js"
 
 function fixture() {
-  const calls: Array<{ operation: string; options: unknown }> = []
+  const calls: object[] = []
   const children = new Map<string, string[]>([
     ["/project", ["/rifts/one"]],
     ["/rifts/one", ["/rifts/two"]],
     ["/rifts/two", []],
   ])
-  const rift = {
-    create(options: Parameters<Parameters<typeof makeStrategy>[0]["create"]>[0]) {
-      calls.push({ operation: "create", options })
-      return `${options.into}/${options.name}`
-    },
-    remove(options: Parameters<Parameters<typeof makeStrategy>[0]["remove"]>[0]) {
-      calls.push({ operation: "remove", options })
-    },
-    list(options: Parameters<Parameters<typeof makeStrategy>[0]["list"]>[0]) {
-      calls.push({ operation: "list", options })
-      return children.get(options.of) ?? []
-    },
+  const call = async (_executable: string, request: object) => {
+    calls.push(request)
+    if (!("command" in request)) throw new Error("missing command")
+    if (request.command === "create" && "into" in request && "name" in request)
+      return `${request.into}/${request.name}`
+    if (request.command === "list" && "of" in request && typeof request.of === "string")
+      return children.get(request.of) ?? []
+    return null
   }
-  return { calls, children, rift, strategy: makeStrategy(rift, { copyAll: false }) }
+  return { calls, children, strategy: makeStrategy({ copyAll: false }, { rpc: call }) }
 }
 
 const context = { signal: new AbortController().signal }
 
 describe("Rift worktree strategy", () => {
   test("validates plugin options", () => {
-    const { rift } = fixture()
-    expect(() => makeStrategy(rift, { copyAll: "yes" })).toThrow("boolean")
-    expect(() => makeStrategy(rift, { hooks: "yes" })).toThrow("boolean")
-    expect(() => makeStrategy(rift, { database: "" })).toThrow("non-empty")
-    expect(() => makeStrategy(rift, { unknown: true })).toThrow("Unknown Rift option")
+    expect(() => makeStrategy({ executable: "" })).toThrow("non-empty")
+    expect(() => makeStrategy({ copyAll: "yes" })).toThrow("boolean")
+    expect(() => makeStrategy({ hooks: "yes" })).toThrow("boolean")
+    expect(() => makeStrategy({ database: "" })).toThrow("non-empty")
+    expect(() => makeStrategy({ unknown: true })).toThrow("Unknown Rift option")
   })
 
   test("creates at OpenCode's suggested destination", async () => {
@@ -42,15 +39,13 @@ describe("Rift worktree strategy", () => {
     ).resolves.toEqual({ directory: "/worktrees/task" })
     expect(calls).toEqual([
       {
-        operation: "create",
-        options: {
-          database: undefined,
-          from: "/project",
-          into: "/worktrees",
-          name: "task",
-          copyAll: false,
-          hooks: true,
-        },
+        database: undefined,
+        command: "create",
+        from: "/project",
+        into: "/worktrees",
+        name: "task",
+        copyAll: false,
+        hooks: true,
       },
     ])
   })
@@ -68,8 +63,36 @@ describe("Rift worktree strategy", () => {
     children.delete("/rifts/two")
     await strategy.remove({ directory: "/rifts/two", force: false }, context)
     expect(calls.at(-1)).toEqual({
-      operation: "remove",
-      options: { database: undefined, at: "/rifts/two", hooks: true },
+      database: undefined,
+      command: "remove",
+      at: "/rifts/two",
+      hooks: true,
     })
+  })
+
+  test("keeps OpenCode inventory consistent after post-hook failures", async () => {
+    const warnings: Array<{ directory: string; message: string }> = []
+    const strategy = makeStrategy(
+      {},
+      {
+        warning: (warning) => warnings.push(warning),
+        rpc: async (_executable, request) => {
+          if ("command" in request && request.command === "create")
+            throw new RpcError({
+              code: "hook_failed",
+              message: "postcreate failed",
+              path: "/worktrees/task",
+              hook: "postcreate",
+              committed: true,
+            })
+          return []
+        },
+      },
+    )
+
+    await expect(
+      strategy.create({ sourceDirectory: "/project", directory: "/worktrees/task" }, context),
+    ).resolves.toEqual({ directory: "/worktrees/task" })
+    expect(warnings).toEqual([{ directory: "/worktrees/task", message: "postcreate failed" }])
   })
 })

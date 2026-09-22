@@ -18,8 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode/plugin": "^2.0.12",
-    "rift-snapshot": "^0.0.11"
+    "@opencode/plugin": "2.0.12"
   },
   "devDependencies": {
     "@types/bun": "latest",

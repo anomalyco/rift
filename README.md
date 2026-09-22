@@ -1,16 +1,8 @@
-> **Warning: Experimental repository**
->
-> This repository is experimental and is not ready for use. We are exploring a variety of ideas here, and behavior, interfaces, and implementation details may change without notice.
+# Rift
 
-rift: better alternative to git worktrees
+Instant copy-on-write workspaces for coding agents and parallel work.
 
-- copy on write (saves space)
-- instant (< 0.1s on 10gb folder)
-- fast cli
-- use as FFI lib with bun or node
-
-mac and linux with btrfs or native reflinks for now
-more support soon
+> Early software. Behavior, interfaces, and storage details may still change.
 
 ## Install
 
@@ -28,81 +20,27 @@ Release archives are available from [GitHub Releases](https://github.com/anomaly
 cd ~/code/app
 rift init
 rift create --name parser-fix
+rift list
+rift remove ~/code/.rifts/app/parser-fix
+rift gc
 ```
 
-`rift create` snapshots the working directory you have right now—staged, dirty, untracked, and included ignored files—
-and prints the new workspace path. Add `eval "$(rift shell-init zsh)"` to your shell to `cd` into new rifts
-automatically, then remove a rift with `rift remove` when you are done.
+`rift init` registers the project root. `rift create` snapshots the current workspace and prints the new path.
+`rift remove` moves a workspace to trash, and `rift gc` deletes trashed workspaces.
 
-## For Agents
-
-Rift gives each agent an isolated copy of your real working state in milliseconds, so agents can experiment without
-touching the checkout you are using.
+Add shell integration to `cd` automatically after `init`, `create`, and `remove`:
 
 ```bash
-rift create --name agent-task
+eval "$(rift shell-init zsh)" # or bash
 ```
 
-Use `.rift.toml` lifecycle hooks to prepare or tear down anything an agent workspace needs, such as dependencies,
-environment files, or per-workspace infrastructure:
-
-```toml
-version = 1
-
-[[hooks.postcreate]]
-run = "pnpm install --frozen-lockfile"
-
-[[hooks.postcreate]]
-run = "docker compose -p rift-$RIFT_ID up -d"
-
-[[hooks.postremove]]
-run = "docker compose -p rift-$RIFT_ID down -v"
+```nushell
+rift shell-init nushell | save -f (($nu.user-autoload-dirs | first) | path join "rift.nu")
 ```
 
-OpenCode can use Rift directly through the [OpenCode plugin](#opencode): its workspace UI creates Rift workspaces, and
-agents get `rift.create`, `rift.list`, and `rift.remove` Code Mode tools.
+## Lifecycle Hooks
 
-## Platforms
-
-| Platform          | Backend                             | Behavior                                                           |
-| ----------------- | ----------------------------------- | ------------------------------------------------------------------ |
-| Linux x64         | Writable btrfs snapshots            | `rift init` converts an ordinary directory into a btrfs subvolume. |
-| Linux x64         | Native per-file reflinks            | `rift init` verifies reflink support and registers the directory.  |
-| macOS arm64 / x64 | APFS `clonefile`                    | `rift init` registers the source directory.                        |
-| Windows x64       | None                                | The package is published; workspace creation is not implemented.   |
-
-## CLI
-
-### Initialize
-
-```bash
-cd ~/code/app
-rift init
-```
-
-`rift init` selects an existing Rift root above the current directory, or the nearest Git root when no Rift root exists. Use `--here` to initialize exactly the selected directory.
-
-On Linux, first initialization of an ordinary btrfs directory performs a reflink import into a new btrfs subvolume and swaps it into the same path. On other Linux filesystems, initialization verifies native reflink support and registers the directory in place. This includes XFS and other filesystems when their `FICLONE` support succeeds. If the selected root is registered already, no conversion occurs. If its `.rift` marker is missing, `rift init` restores it and completes any required setup.
-
-### Create
-
-```bash
-rift create
-rift create --name parser-fix
-rift create --into /fast/rifts
-rift create --copy-all
-rift create --no-hooks
-```
-
-`rift create` searches upward for `.rift`, copies that managed workspace, records the immediate parent, and prints the new workspace path to stdout.
-
-By default, creation omits heavyweight regenerable dependency and build artifacts such as `node_modules`, `target`, virtualenvs, framework caches, `dist`, `build`, and `coverage`. Manifests and lockfiles are preserved. Use `--copy-all` to keep the previous exact-copy behavior.
-
-On btrfs, exact copies use writable subvolume snapshots and filtered copies use a reflink import into a new subvolume. On other reflink-capable Linux filesystems, Rift reflink-clones the selected directory tree. On macOS, exact copies use APFS `clonefile`, and filtered copies clone included entries.
-
-When the workspace is a Git repository, the new workspace has detached `HEAD` and retains index and working-tree state.
-
-If the source contains `.rift.toml`, `rift create` runs configured precreate hooks before copying and postcreate hooks after the workspace is created, registered, and prepared. Use `--no-hooks` to skip them.
+Add `.rift.toml` to a workspace to run commands around creation and removal:
 
 ```toml
 version = 1
@@ -114,59 +52,31 @@ run = "pnpm run check"
 run = "pnpm install --frozen-lockfile"
 
 [[hooks.postcreate]]
-run = "pnpm run codegen"
-```
+run = "docker compose -p rift-$RIFT_ID up -d"
 
-Precreate commands run in the source workspace; postcreate commands run in the new workspace. A precreate failure prevents creation. If a postcreate hook fails, the workspace remains registered and `rift create` exits with an error.
-
-### List And Ancestors
-
-```bash
-rift list
-rift ancestors
-```
-
-`list` prints direct active child workspaces. `ancestors` prints parent workspaces, nearest first.
-
-### Remove And Garbage Collection
-
-```bash
-rift remove                         # trash the current created rift subtree
-rift remove -f ~/code/app           # unregister a source root
-rift remove --children ~/code/app   # trash descendants, preserve the selected workspace
-rift remove --no-hooks ~/code/app/task
-rift gc                             # physically delete trash and prune missing entries
-```
-
-Removing a created rift moves its active subtree into adjacent `.trash` storage. `rift gc` deletes that storage later.
-
-Removing a source root requires `-f` in the CLI. The source directory remains on disk. Its `.rift` marker is removed. Existing registered descendants are moved into trash. Missing descendants are removed from the registry.
-
-`preremove` hooks run in the selected workspace before removal. `postremove` hooks run after removal, from the moved trash directory when the selected workspace was trashed and from the selected workspace when it was preserved. Use `--no-hooks` to skip remove hooks.
-
-```toml
 [[hooks.preremove]]
 run = "pnpm run cleanup"
 
 [[hooks.postremove]]
-run = "echo removed $RIFT_SOURCE"
+run = "docker compose -p rift-$RIFT_ID down -v"
 ```
 
-### Shell Integration
+| Hook         | Runs in                     | On failure                                   |
+| ------------ | --------------------------- | -------------------------------------------- |
+| `precreate`  | source workspace            | nothing is created                           |
+| `postcreate` | new workspace               | workspace stays registered; command fails     |
+| `preremove`  | selected workspace          | nothing is removed                           |
+| `postremove` | trashed or preserved path   | removal stays complete; command fails         |
 
-```bash
-eval "$(rift shell-init zsh)" # or bash
-```
+Hooks receive `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. Hook output goes to stderr so
+workspace paths on stdout stay machine-readable. Use `--no-hooks` to skip hooks.
 
-```nushell
-rift shell-init nushell | save -f (($nu.user-autoload-dirs | first) | path join "rift.nu")
-```
+## Agents and OpenCode
 
-The shell wrapper changes directory after `init` conversion, `create`, or removal of the current created rift.
+Each agent can get an isolated copy of your real working state instead of sharing your checkout or starting from a
+clean commit.
 
-## OpenCode
-
-Use Rift workspaces as the worktree backend in OpenCode V2:
+Use Rift as the worktree backend in OpenCode V2:
 
 ```sh
 opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
@@ -181,21 +91,81 @@ Or configure it manually:
 }
 ```
 
-Run `rift init` once in the project root. OpenCode's worktree UI and API will then create and manage Rift workspaces.
-Agents can use the plugin's Code Mode tools to manage snapshots and OpenCode's session tools to move between them. See
+After `rift init` in the project root, OpenCode's workspace UI creates Rift workspaces, agents get `rift.create`,
+`rift.list`, and `rift.remove` Code Mode tools, and OpenCode's session tools move sessions between workspaces. See
 [`plugins/opencode`](plugins/opencode) for options and limitations.
 
-## Storage
+## CLI
 
-Each managed workspace has a `.rift` marker containing its identifier. An SQLite registry stores paths, parent identifiers, and trash entries.
+### `rift init`
 
-Default created-workspace storage is adjacent to the registered source root:
+```bash
+rift init
+rift init --here
+```
+
+Selects an existing Rift root above the current directory, or the nearest Git root when no Rift root exists. `--here`
+initializes exactly the selected directory. If a registered root lost its `.rift` marker, `init` restores it.
+
+### `rift create`
+
+```bash
+rift create
+rift create --name parser-fix
+rift create --into /fast/rifts
+rift create --copy-all
+rift create --no-hooks
+```
+
+Copies the nearest managed workspace, records it as the parent, and prints the new workspace path. Filtered copies
+omit regenerable artifacts such as `node_modules`, `target`, virtualenvs, framework caches, `dist`, `build`, and
+`coverage`; manifests and lockfiles are kept. `--copy-all` makes an exact copy.
+
+Git repositories are copied with detached `HEAD`, preserving index and working-tree state. Linked worktrees and
+repositories with in-progress merges, rebases, cherry-picks, reverts, bisects, or lock files are rejected.
+
+### `rift list` and `rift ancestors`
+
+```bash
+rift list
+rift ancestors
+```
+
+`list` prints direct child workspaces. `ancestors` prints parent workspaces, nearest first.
+
+### `rift remove` and `rift gc`
+
+```bash
+rift remove                         # trash the current created rift subtree
+rift remove -f ~/code/app           # unregister a source root
+rift remove --children ~/code/app   # trash descendants, keep the selected workspace
+rift remove --no-hooks ~/code/app/task
+rift gc                             # delete trash and prune missing entries
+```
+
+Removing a created workspace moves its subtree into adjacent `.trash` storage. Unregistering a root requires `-f`,
+keeps the source directory, removes its `.rift` marker, and trashes registered descendants.
+
+## How It Works
+
+| Platform          | Backend                  | Notes                                                  |
+| ----------------- | ------------------------ | ------------------------------------------------------ |
+| Linux x64         | btrfs snapshots          | `rift init` converts a directory into a subvolume       |
+| Linux x64         | Native per-file reflinks | XFS and other filesystems with working `FICLONE`        |
+| macOS arm64 / x64 | APFS `clonefile`         | Requires an APFS volume                                 |
+| Windows x64       | None                     | Package is published; workspace creation is unsupported |
+
+Each managed workspace has a `.rift` marker containing its ID. A SQLite registry stores paths, parents, and trash
+entries. Default storage is adjacent to the source root:
 
 ```text
 ~/code/app/                         source workspace
 ~/code/.rifts/app/parser-fix/       created workspace
-~/code/.rifts/app/.trash/            removed workspace storage
+~/code/.rifts/app/.trash/           removed workspace storage
 ```
+
+Workspaces never overlap, concurrent creates never delete each other's destinations, and removal is a trash operation
+until `rift gc` runs.
 
 ## JavaScript API
 
@@ -210,18 +180,6 @@ remove({ at: workspace });
 gc();
 ```
 
-### Node.js
-
-The Node binding requires the experimental FFI API in Node.js 26.1 or later:
-
-```bash
-node --experimental-ffi app.mjs
-```
-
-With Node's permission model, also pass `--allow-ffi`.
-
-### Functions
-
 ```ts
 init(options?: { at?: string; database?: string }): null
 create(options?: { from?: string; name?: string; into?: string; copyAll?: boolean; hooks?: boolean; database?: string }): string
@@ -232,9 +190,10 @@ ancestors(options?: { of?: string; database?: string }): string[]
 gc(options?: { database?: string }): string[]
 ```
 
-The JavaScript `init` function initializes exactly `at`; Git-root selection and `--here` are CLI behavior.
-
-Operation failures throw `RiftError` with a `code` and, when relevant, `path`.
+Node requires the experimental FFI API in Node.js 26.1 or later (`node --experimental-ffi`, plus `--allow-ffi` under
+the permission model). `init` initializes exactly `at`; Git-root selection is CLI behavior. Calls are synchronous, so
+lifecycle hooks block the caller. Failures throw `RiftError` with `code`, and when relevant `path`, `hook`, and
+`committed`.
 
 ## Development
 
@@ -245,36 +204,14 @@ cargo test --workspace --locked
 
 `scripts/install.sh` installs an optimized CLI binary to `${CARGO_HOME:-$HOME/.cargo}/bin/rift`.
 
-### Benchmark
-
-Benchmark a single real `rift create` operation against a directory:
-
-```bash
-cargo bench --bench create -- /path/to/linux
-```
-
-The benchmark initializes the supplied directory before timing, times only creation of the new rift, and then removes the created workspace outside the measured interval. On first use, initialization of an ordinary Linux btrfs directory converts it into a subvolume before measurement. The benchmark uses the production filesystem strategy, so results measure APFS cloning on macOS, btrfs snapshots on btrfs, and per-file reflinks on reflink-capable Linux filesystems.
-
-Establish a baseline by measuring multiple independent rift creations and writing an aggregate machine-readable result file. Keep results outside the source workspace so they do not alter future measurements:
+Benchmark a real `rift create` against a directory, or compare candidate Rift checkouts:
 
 ```bash
 cargo bench --bench create -- /path/to/linux --samples 10 --output /path/to/results/baseline.json
+cargo bench --bench compare -- /path/to/linux --candidate /path/to/rift-a --candidate /path/to/rift-b --samples 10 --output /path/to/results/run-01
 ```
 
-The JSON result includes each timing sample and the median, minimum, and maximum elapsed time. A future experiment loop can run the same command in candidate workspaces and compare their median results to this baseline.
-
-Compare multiple candidate `rift` code workspaces that contain this benchmark target:
-
-```bash
-cargo bench --bench compare -- /path/to/linux \
-  --candidate /path/to/rift-baseline \
-  --candidate /path/to/rift-candidate-a \
-  --candidate /path/to/rift-candidate-b \
-  --samples 10 \
-  --output /path/to/results/create-run-01
-```
-
-The comparison runner invokes each candidate's optimized `create` benchmark against the same workload, writes `candidate-01.json`, `candidate-02.json`, and so on, then writes `summary.json` with candidates ranked by median creation time. Include the unchanged workspace as one candidate when you need a baseline in the ranking.
+Results include per-sample timings plus median, minimum, and maximum; `compare` ranks candidates by median.
 
 ## License
 

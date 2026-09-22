@@ -45,9 +45,11 @@ Set `copyAll` when you want an exact snapshot instead:
 
 Use `database` to point the plugin at a non-default Rift registry.
 
+Rift lifecycle hooks run by default. This lets projects validate before creation, prepare dependencies or infrastructure
+after creation, and clean up external resources around removal. Set `"hooks": false` in the plugin options when
+OpenCode's `commands.start` is the only lifecycle behavior you want.
+
 ## Current boundaries
 
-- Rift lifecycle hooks are disabled. OpenCode owns post-create startup through `commands.start`, and worktree failures
-  remain atomic from OpenCode's perspective.
 - Starting from an explicit Git ref is not supported. Rift snapshots a working directory, not a commit.
 - Remove child Rift workspaces before removing their parent.

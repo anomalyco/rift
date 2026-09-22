@@ -30,6 +30,7 @@ describe("Rift worktree strategy", () => {
   test("validates plugin options", () => {
     const { rift } = fixture()
     expect(() => makeStrategy(rift, { copyAll: "yes" })).toThrow("boolean")
+    expect(() => makeStrategy(rift, { hooks: "yes" })).toThrow("boolean")
     expect(() => makeStrategy(rift, { database: "" })).toThrow("non-empty")
     expect(() => makeStrategy(rift, { unknown: true })).toThrow("Unknown Rift option")
   })
@@ -48,7 +49,7 @@ describe("Rift worktree strategy", () => {
           into: "/worktrees",
           name: "task",
           copyAll: false,
-          hooks: false,
+          hooks: true,
         },
       },
     ])
@@ -68,7 +69,7 @@ describe("Rift worktree strategy", () => {
     await strategy.remove({ directory: "/rifts/two", force: false }, context)
     expect(calls.at(-1)).toEqual({
       operation: "remove",
-      options: { database: undefined, at: "/rifts/two", hooks: false },
+      options: { database: undefined, at: "/rifts/two", hooks: true },
     })
   })
 })

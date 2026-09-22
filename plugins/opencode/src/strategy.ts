@@ -7,28 +7,31 @@ interface Rift {
     name: string
     into: string
     copyAll: boolean
-    hooks: false
+    hooks: boolean
     database?: string
   }): string
-  remove(options: { at: string; hooks: false; database?: string }): void
+  remove(options: { at: string; hooks: boolean; database?: string }): void
   list(options: { of: string; database?: string }): string[]
 }
 
 interface Options {
   copyAll: boolean
+  hooks: boolean
   database?: string
 }
 
 function parseOptions(value: Record<string, unknown>): Options {
   for (const key of Object.keys(value)) {
-    if (key !== "copyAll" && key !== "database") throw new Error(`Unknown Rift option: ${key}`)
+    if (key !== "copyAll" && key !== "hooks" && key !== "database") throw new Error(`Unknown Rift option: ${key}`)
   }
   const copyAll = value.copyAll ?? false
+  const hooks = value.hooks ?? true
   const database = value.database
   if (typeof copyAll !== "boolean") throw new Error("Rift copyAll must be a boolean")
+  if (typeof hooks !== "boolean") throw new Error("Rift hooks must be a boolean")
   if (database !== undefined && (typeof database !== "string" || !database.trim()))
     throw new Error("Rift database must be a non-empty path")
-  return { copyAll, database }
+  return { copyAll, hooks, database }
 }
 
 export function makeStrategy(rift: Rift, value: Record<string, unknown> = {}) {
@@ -63,7 +66,7 @@ export function makeStrategy(rift: Rift, value: Record<string, unknown> = {}) {
           into: path.dirname(input.directory),
           name: path.basename(input.directory),
           copyAll: options.copyAll,
-          hooks: false,
+          hooks: options.hooks,
         }),
       )
       return { directory }
@@ -73,7 +76,7 @@ export function makeStrategy(rift: Rift, value: Record<string, unknown> = {}) {
       const children = run(() => rift.list({ ...settings, of: input.directory }))
       if (children.length)
         throw new Worktree.OperationError({ message: "Remove this Rift's child workspaces first" })
-      run(() => rift.remove({ ...settings, at: input.directory, hooks: false }))
+      run(() => rift.remove({ ...settings, at: input.directory, hooks: options.hooks }))
     },
     async list(sourceDirectory: string, context: { signal: AbortSignal }) {
       context.signal.throwIfAborted()

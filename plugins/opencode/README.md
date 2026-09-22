@@ -19,7 +19,7 @@ rift init
 Then install the plugin from this repository:
 
 ```sh
-opencode plugin add 'github:anomalyco/rift#dev::path:plugins/opencode'
+opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
 ```
 
 New workspaces created by OpenCode will now use Rift. Existing workspaces keep the backend that created them.
@@ -50,7 +50,7 @@ Set `copyAll` when you want an exact snapshot instead:
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "github:anomalyco/rift#dev::path:plugins/opencode",
+      "package": "github:anomalyco/rift#v0.0.12::path:plugins/opencode",
       "options": { "copyAll": true }
     }
   ]

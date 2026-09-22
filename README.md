@@ -129,7 +129,7 @@ The shell wrapper changes directory after `init` conversion, `create`, or remova
 Use Rift as the worktree backend in OpenCode V2:
 
 ```sh
-opencode plugin add 'github:anomalyco/rift#dev::path:plugins/opencode'
+opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
 ```
 
 Or configure it manually:
@@ -137,7 +137,7 @@ Or configure it manually:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:anomalyco/rift#dev::path:plugins/opencode"]
+  "plugins": ["github:anomalyco/rift#v0.0.12::path:plugins/opencode"]
 }
 ```
 

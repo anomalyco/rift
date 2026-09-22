@@ -22,6 +22,46 @@ bun add -g rift-snapshot
 
 Release archives are available from [GitHub Releases](https://github.com/anomalyco/rift/releases/latest).
 
+## Quick Start
+
+```bash
+cd ~/code/app
+rift init
+rift create --name parser-fix
+```
+
+`rift create` snapshots the working directory you have right now—staged, dirty, untracked, and included ignored files—
+and prints the new workspace path. Add `eval "$(rift shell-init zsh)"` to your shell to `cd` into new rifts
+automatically, then remove a rift with `rift remove` when you are done.
+
+## For Agents
+
+Rift gives each agent an isolated copy of your real working state in milliseconds, so agents can experiment without
+touching the checkout you are using.
+
+```bash
+rift create --name agent-task
+```
+
+Use `.rift.toml` lifecycle hooks to prepare or tear down anything an agent workspace needs, such as dependencies,
+environment files, or per-workspace infrastructure:
+
+```toml
+version = 1
+
+[[hooks.postcreate]]
+run = "pnpm install --frozen-lockfile"
+
+[[hooks.postcreate]]
+run = "docker compose -p rift-$RIFT_ID up -d"
+
+[[hooks.postremove]]
+run = "docker compose -p rift-$RIFT_ID down -v"
+```
+
+OpenCode can use Rift directly through the [OpenCode plugin](#opencode): its workspace UI creates Rift snapshots, and
+agents get `rift.create`, `rift.list`, and `rift.remove` Code Mode tools.
+
 ## Platforms
 
 | Platform          | Backend                             | Behavior                                                           |

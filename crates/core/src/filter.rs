@@ -15,9 +15,10 @@ impl CopyFilter {
             .collect::<Vec<_>>();
 
         parts.iter().any(|part| excludes_component(part))
-            || parts
-                .windows(2)
-                .any(|parts| matches_yarn_artifact(parts[0], parts[1]))
+            || parts.windows(2).any(|parts| {
+                matches_yarn_artifact(parts[0], parts[1])
+                    || matches_git_artifact(parts[0], parts[1])
+            })
     }
 }
 
@@ -56,6 +57,10 @@ fn matches_yarn_artifact(first: &OsStr, second: &OsStr) -> bool {
             .any(|artifact| second == artifact)
 }
 
+fn matches_git_artifact(first: &OsStr, second: &OsStr) -> bool {
+    first == ".git" && second == "fsmonitor--daemon.ipc"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,6 +71,7 @@ mod tests {
 
         assert!(filter.excludes(Path::new("packages/app/node_modules/react/index.js")));
         assert!(filter.excludes(Path::new("packages/app/.yarn/cache/react.zip")));
+        assert!(filter.excludes(Path::new(".git/fsmonitor--daemon.ipc")));
         assert!(!filter.excludes(Path::new("packages/app/package-lock.json")));
     }
 }

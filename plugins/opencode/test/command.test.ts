@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -17,6 +18,60 @@ test("cancellation stops an in-flight RPC process", async () => {
     await expect(pending).rejects.toBe(reason)
   } finally {
     clearTimeout(timer)
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test("repeated RPCs complete with a disconnected host stderr", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "opencode-rift-rpc-"))
+  const executable = join(temp, "rift")
+  await writeFile(executable, `#!/usr/bin/env node
+let count = 0
+const timer = setInterval(() => {
+  process.stderr.write("hook output\\n".repeat(100))
+  if (++count < 20) return
+  clearInterval(timer)
+  process.stdout.write(JSON.stringify({ status: "ok", value: "/workspace" }))
+}, 10)
+`)
+  await chmod(executable, 0o755)
+  await writeFile(join(temp, "runner.ts"), `
+import { rpc } from ${JSON.stringify(new URL("../src/command.ts", import.meta.url).pathname)}
+for (let index = 0; index < 3; index++) {
+  console.log(await rpc(${JSON.stringify(executable)}, {}, AbortSignal.timeout(1500)))
+}
+`)
+  try {
+    const result = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [join(temp, "runner.ts")], { stdio: ["ignore", "pipe", "pipe"] })
+      let stdout = ""
+      child.stderr.destroy()
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString()
+      })
+      child.on("error", reject)
+      child.on("close", (code) => resolve({ code, stdout }))
+    })
+    expect(result.code).toBe(0)
+    expect(result.stdout.trim().split("\n")).toEqual(["/workspace", "/workspace", "/workspace"])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test("failed RPCs include a bounded stderr tail", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "opencode-rift-rpc-"))
+  const executable = join(temp, "rift")
+  await writeFile(
+    executable,
+    '#!/usr/bin/env node\nprocess.stderr.write("x".repeat(20000) + "hook failed\\n", () => process.exit(1))\n',
+  )
+  await chmod(executable, 0o755)
+  try {
+    await expect(rpc(executable, {}, AbortSignal.timeout(1500))).rejects.toThrow(
+      `Rift exited with status 1: ${"x".repeat(8 * 1024 - "hook failed\n".length)}hook failed`,
+    )
+  } finally {
     await rm(temp, { recursive: true, force: true })
   }
 })

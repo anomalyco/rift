@@ -33,6 +33,7 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
       stdio: ["pipe", "pipe", "pipe"],
     })
     const chunks: Buffer[] = []
+    let stderr = Buffer.alloc(0)
     let size = 0
     let settled = false
     const finish = (result: () => void) => {
@@ -62,12 +63,19 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
       }
       chunks.push(chunk)
     })
-    child.stderr.pipe(process.stderr, { end: false })
+    // The background host's stderr may have no reader. Forwarding to it can
+    // pause this stream forever, preventing the child's close event.
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = Buffer.concat([stderr, chunk]).subarray(-8 * 1024)
+    })
     child.on("error", (error) => finish(() => reject(error)))
     child.stdin.on("error", (error) => finish(() => reject(error)))
     child.on("close", (code) => {
       if (settled) return
-      if (code !== 0) return finish(() => reject(new Error(`Rift exited with status ${code}`)))
+      if (code !== 0) {
+        const detail = stderr.toString().trim()
+        return finish(() => reject(new Error(`Rift exited with status ${code}${detail ? `: ${detail}` : ""}`)))
+      }
       let response: unknown
       try {
         response = JSON.parse(Buffer.concat(chunks).toString())

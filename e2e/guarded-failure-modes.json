@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "fixture_only": true,
+  "failure_modes": [
+    {
+      "id": "dry_db_wal_shm_mutation",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "live_wal_ignored",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unstable_database_copy",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "stale_database_snapshot",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "marker_id_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "marker_hash_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unexpected_row_id",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unexpected_parent",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unexpected_children",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "stored_path_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "canonical_path_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "alias_identity_changed",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "directory_identity_changed",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "root_kind_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "leaf_kind_mismatch",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "closure_incomplete",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unrelated_ancestry_retired",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "protected_ancestry_retired",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "preremove_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "preremove_state_change",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "postremove_failure_committed",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rename_destination_occupied",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rename_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "database_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_before_rename",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_after_rename",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_before_commit",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_after_commit",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_during_rollback",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rollback_destination_occupied",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rollback_stale_rows",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rollback_marker_or_files_changed",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "concurrent_native_writer",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "sqlite_writer_contention",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "legacy_native_writer_during_journal",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "source_git_mutation",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "postremove_state_change",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "unknown_tables_stale",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "root_old_trash_nested",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "alias_ancestor_identity_changed",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "legacy_noncooperative_writer_stale",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rowid_restoration",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "journal_publish_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rename_partial_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "rollback_commit_failure",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "crash_after_rollback_commit",
+      "expected": "reject without retirement, or retain durable journal with exact committed status for recovery"
+    },
+    {
+      "id": "finalize_uncommitted",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "finalize_stale_registry",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "finalize_changed_files",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "history_rollback_stale_state",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "history_rollback_wrong_path",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "finalize_hash_mismatch",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "crash_after_finalize_archive",
+      "expected": "reject without mutation, or retain durable exact history with committed status"
+    },
+    {
+      "id": "crash_before_postremove",
+      "expected": "report committed with unconfirmed hook completion; no replay; reject finalize; permit exact rollback"
+    },
+    {
+      "id": "postremove_unconfirmed_finalize",
+      "expected": "report committed with unconfirmed hook completion; no replay; reject finalize; permit exact rollback"
+    }
+  ]
+}

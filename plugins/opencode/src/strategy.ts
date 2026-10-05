@@ -19,6 +19,12 @@ interface Runtime {
   rpc?: typeof rpc
 }
 
+const hints: Partial<Record<string, string>> = {
+  workspace_not_initialized: "Rift source is not initialized; run `rift init` from the project root first",
+  initialization_required: "This Rift workspace must be initialized first; run `rift init` from its root folder",
+  missing_marker: "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
+}
+
 function parseOptions(value: Record<string, unknown>): Options {
   for (const key of Object.keys(value)) {
     if (key !== "executable" && key !== "copyAll" && key !== "hooks" && key !== "database")
@@ -44,11 +50,7 @@ export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runti
     call(options.executable, { database: options.database, ...command }, signal)
   const failure = (error: unknown) => {
     const message =
-      error instanceof RpcError && error.code === "workspace_not_initialized"
-        ? "Rift source is not initialized; run `rift init` from the project root first"
-        : error instanceof Error
-          ? error.message
-          : String(error)
+      (error instanceof RpcError && hints[error.code]) || (error instanceof Error ? error.message : String(error))
     return new Worktree.OperationError({ message })
   }
   const committed = (error: unknown, hook: string) =>

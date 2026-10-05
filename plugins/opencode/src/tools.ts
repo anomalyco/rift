@@ -114,7 +114,8 @@ export async function registerTools(ctx: Context, listeners: Listeners) {
     })
     editor.add({
       name: "remove",
-      description: "Remove a Rift workspace from the current project.",
+      description:
+        "Remove a Rift workspace from the current project. Refuses the workspace this session is in and workspaces that still have child workspaces.",
       input: {
         type: "object",
         properties: {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -106,6 +106,50 @@ process.stdout.write(${JSON.stringify(JSON.stringify({ status: "error", error: f
       hook: "postcreate",
       committed: true,
     })
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test("RPCs finish when hook processes keep stderr open", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "opencode-rift-rpc-"))
+  const executable = join(temp, "rift")
+  const pidfile = join(temp, "daemon.pid")
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+const { spawn } = require("node:child_process")
+const daemon = spawn("sleep", ["30"], { stdio: ["ignore", "ignore", "inherit"] })
+require("node:fs").writeFileSync(${JSON.stringify(pidfile)}, String(daemon.pid))
+daemon.unref()
+process.stderr.write("compose: port 5432 in use\\n", () => {
+  process.stdout.write(${JSON.stringify(JSON.stringify({ status: "error", error: { code: "hook_failed", message: "postcreate hook failed" } }))})
+})
+`,
+  )
+  await chmod(executable, 0o755)
+  try {
+    await expect(rpc(executable, {}, AbortSignal.timeout(3000))).rejects.toThrow(
+      "postcreate hook failed: compose: port 5432 in use",
+    )
+  } finally {
+    process.kill(Number(await readFile(pidfile, "utf8")))
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+test("signal deaths name the signal", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "opencode-rift-rpc-"))
+  const executable = join(temp, "rift")
+  await writeFile(
+    executable,
+    '#!/usr/bin/env node\nprocess.stderr.write("fatal runtime error\\n", () => process.kill(process.pid, "SIGKILL"))\n',
+  )
+  await chmod(executable, 0o755)
+  try {
+    await expect(rpc(executable, {}, AbortSignal.timeout(3000))).rejects.toThrow(
+      "Rift was terminated by SIGKILL: fatal runtime error",
+    )
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

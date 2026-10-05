@@ -71,6 +71,30 @@ describe("Rift workspace strategy", () => {
     })
   })
 
+  test("explains initialization failures", async () => {
+    const failing = (code: string) =>
+      makeStrategy(
+        {},
+        {
+          rpc: async () => {
+            throw new RpcError({ code, message: `${code} at /project`, path: "/project" })
+          },
+        },
+      )
+    const create = (code: string) =>
+      failing(code).create({ sourceDirectory: "/project", directory: "/worktrees/task" }, context)
+    await expect(create("workspace_not_initialized")).rejects.toThrow(
+      "Rift source is not initialized; run `rift init` from the project root first",
+    )
+    await expect(create("initialization_required")).rejects.toThrow(
+      "This Rift workspace must be initialized first; run `rift init` from its root folder",
+    )
+    await expect(create("missing_marker")).rejects.toThrow(
+      "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
+    )
+    await expect(create("hook_failed")).rejects.toThrow("hook_failed at /project")
+  })
+
   test("keeps OpenCode inventory consistent after post-hook failures", async () => {
     const warnings: Array<{ directory: string; message: string }> = []
     const strategy = makeStrategy(

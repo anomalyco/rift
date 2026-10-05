@@ -1,12 +1,35 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import path from "node:path"
+import type { Warning } from "./strategy.js"
+
+type Listeners = Set<(warning: Warning) => void>
 
 function contains(parent: string, child: string) {
   const relative = path.relative(parent, child)
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
-export async function registerTools(ctx: Context) {
+// The strategy raises committed hook failures inside the host's worktree call,
+// which reports success, so the tool listens for them while that call runs.
+async function watch<T>(listeners: Listeners, run: () => Promise<T>) {
+  const warnings: Warning[] = []
+  const listener = (warning: Warning) => warnings.push(warning)
+  listeners.add(listener)
+  try {
+    const result = await run()
+    return { result, warning: (directory: string) => warnings.find((entry) => entry.directory === directory)?.message }
+  } finally {
+    listeners.delete(listener)
+  }
+}
+
+function report(directory: string, content: string, warning: string | undefined) {
+  return warning
+    ? { output: { directory, warning }, content: `${content}\n\nWarning: ${warning}` }
+    : { output: { directory }, content }
+}
+
+export async function registerTools(ctx: Context, listeners: Listeners) {
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "rift",
@@ -26,6 +49,7 @@ export async function registerTools(ctx: Context) {
         type: "object",
         properties: {
           directory: { type: "string" },
+          warning: { type: "string", description: "Set when a postcreate hook failed after creation." },
         },
         required: ["directory"],
         additionalProperties: false,
@@ -39,15 +63,18 @@ export async function registerTools(ctx: Context) {
           .filter((entry) => contains(entry.directory, session.location.directory))
           .toSorted((left, right) => right.directory.length - left.directory.length)[0]
         if (!source) throw new Error(`Current session is not inside a known workspace: ${session.location.directory}`)
-        const created = await ctx.worktree.create({
-          projectID: session.projectID,
-          from: source.directory,
-          name: value.name,
-        })
-        return {
-          output: { directory: created.directory },
-          content: `Created ${created.directory}. Use opencode.session_move to move a session into it.`,
-        }
+        const { result: created, warning } = await watch(listeners, () =>
+          ctx.worktree.create({
+            projectID: session.projectID,
+            from: source.directory,
+            name: value.name,
+          }),
+        )
+        return report(
+          created.directory,
+          `Created ${created.directory}. Use opencode.session_move to move a session into it.`,
+          warning(created.directory),
+        )
       },
     })
     editor.add({
@@ -98,7 +125,10 @@ export async function registerTools(ctx: Context) {
       },
       output: {
         type: "object",
-        properties: { directory: { type: "string" } },
+        properties: {
+          directory: { type: "string" },
+          warning: { type: "string", description: "Set when a postremove hook failed after removal." },
+        },
         required: ["directory"],
         additionalProperties: false,
       },
@@ -108,15 +138,14 @@ export async function registerTools(ctx: Context) {
         const session = await ctx.session.get({ sessionID: tool.sessionID })
         if (contains(value.directory, session.location.directory))
           throw new Error("Move this session out of the Rift before removing it")
-        await ctx.worktree.remove({
-          projectID: session.projectID,
-          directory: value.directory,
-          force: false,
-        })
-        return {
-          output: { directory: value.directory },
-          content: `Removed ${value.directory}.`,
-        }
+        const { warning } = await watch(listeners, () =>
+          ctx.worktree.remove({
+            projectID: session.projectID,
+            directory: value.directory,
+            force: false,
+          }),
+        )
+        return report(value.directory, `Removed ${value.directory}.`, warning(value.directory))
       },
     })
   })

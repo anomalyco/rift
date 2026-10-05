@@ -9,8 +9,13 @@ interface Options {
   database?: string
 }
 
+export interface Warning {
+  directory: string
+  message: string
+}
+
 interface Runtime {
-  warning?: (input: { directory: string; message: string }) => void
+  warning?: (input: Warning) => void
   rpc?: typeof rpc
 }
 

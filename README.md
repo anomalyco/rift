@@ -79,7 +79,7 @@ clean commit.
 Use Rift as the worktree backend in OpenCode V2:
 
 ```sh
-opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
+opencode plugin add 'github:anomalyco/rift#v0.0.13::path:plugins/opencode'
 ```
 
 Or configure it manually:
@@ -87,7 +87,7 @@ Or configure it manually:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:anomalyco/rift#v0.0.12::path:plugins/opencode"]
+  "plugins": ["github:anomalyco/rift#v0.0.13::path:plugins/opencode"]
 }
 ```
 

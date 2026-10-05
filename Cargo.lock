@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "rift"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "dirs",
  "git2",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "rift-cli"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "clap",
  "rift",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "rift-ffi"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "rift",
 ]

@@ -3,9 +3,9 @@
 Use Rift workspaces as the worktree backend in OpenCode V2.
 
 ```sh
-npm install -g rift-snapshot
+npm install -g rift-snapshot@0.0.13
 rift init
-opencode plugin add 'github:anomalyco/rift#v0.0.12::path:plugins/opencode'
+opencode plugin add 'github:anomalyco/rift#v0.0.13::path:plugins/opencode'
 ```
 
 OpenCode's workspace UI then creates Rift workspaces, and agents get `rift.create`, `rift.list`, and `rift.remove`.
@@ -17,7 +17,7 @@ Move sessions with OpenCode's `opencode.session_move` tool.
 {
   "plugins": [
     {
-      "package": "github:anomalyco/rift#v0.0.12::path:plugins/opencode",
+      "package": "github:anomalyco/rift#v0.0.13::path:plugins/opencode",
       "options": { "copyAll": false, "hooks": true, "executable": "rift", "database": "/path/to/rift.sqlite" }
     }
   ]

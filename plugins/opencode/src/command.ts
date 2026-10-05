@@ -63,8 +63,8 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
       }
       chunks.push(chunk)
     })
-    // The background host's stderr may have no reader. Forwarding to it can
-    // pause this stream forever, preventing the child's close event.
+    // The background host's stderr may have no reader, so drain it here rather
+    // than forwarding it there.
     child.stderr.on("data", (chunk: Buffer) => {
       tail = Buffer.concat([tail, chunk]).subarray(-8 * 1024)
     })
@@ -76,8 +76,9 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
     }
     child.on("error", (error) => finish(() => reject(error)))
     child.stdin.on("error", (error) => finish(() => reject(error)))
-    child.on("close", (code) => {
+    const complete = (code: number | null, killed: NodeJS.Signals | null) => {
       if (settled) return
+      if (killed) return finish(() => reject(new Error(describe(`Rift was terminated by ${killed}`))))
       if (code !== 0) return finish(() => reject(new Error(describe(`Rift exited with status ${code}`))))
       const invalid = () => finish(() => reject(new Error(describe("Rift returned an invalid RPC response"))))
       let response: unknown
@@ -93,7 +94,24 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
         return finish(() => reject(new RpcError({ ...failure, message: describe(failure.message) })))
       }
       invalid()
+    }
+    // Processes started by hooks inherit stderr and can hold it open long after
+    // Rift exits, so close may never fire. Once Rift has exited and stdout has
+    // ended, give stderr a moment to flush and settle without waiting for close.
+    let exited: [number | null, NodeJS.Signals | null] | undefined
+    let ended = false
+    const drained = () => {
+      if (exited && ended) setTimeout(complete, 100, ...exited).unref()
+    }
+    child.on("exit", (code, killed) => {
+      exited = [code, killed]
+      drained()
     })
+    child.stdout.on("end", () => {
+      ended = true
+      drained()
+    })
+    child.on("close", complete)
     child.stdin.end(JSON.stringify(request))
   })
 }

@@ -71,7 +71,10 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
     // Hook output only reaches the host through these messages, and hook
     // failures arrive as structured errors from a zero exit.
     const describe = (message: string) => {
-      const detail = tail.toString().trim()
+      // Skip UTF-8 continuation bytes left by cutting the tail mid-character.
+      let start = 0
+      while ((tail[start] & 0xc0) === 0x80) start++
+      const detail = tail.subarray(start).toString().trim()
       return detail ? `${message}: ${detail}` : message
     }
     child.on("error", (error) => finish(() => reject(error)))

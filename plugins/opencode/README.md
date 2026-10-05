@@ -25,7 +25,7 @@ Move sessions with OpenCode's `opencode.session_move` tool.
 ```
 
 - `copyAll`: exact snapshots instead of filtered ones.
-- `hooks`: run `.rift.toml` lifecycle hooks. Hook output goes to the OpenCode server's stderr.
+- `hooks`: run `.rift.toml` lifecycle hooks. Hook output is not streamed; failures include its last 8 KiB.
 - `executable`: Rift binary to run.
 - `database`: non-default Rift registry.
 

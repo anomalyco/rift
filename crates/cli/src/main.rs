@@ -84,6 +84,11 @@ impl Shell {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Exact reviewed native lifecycle; requires an explicit database.
+    Guarded {
+        #[command(subcommand)]
+        action: GuardedCommand,
+    },
     #[command(hide = true)]
     Rpc,
     ShellInit {
@@ -124,6 +129,84 @@ enum Command {
     Gc,
 }
 
+#[derive(Subcommand)]
+enum GuardedCommand {
+    /// Report the exact build commit and compatible base release.
+    Provenance,
+    /// Read a request JSON file and emit an immutable dry review plan.
+    Preflight { request: PathBuf },
+    /// Apply the complete reviewed plan JSON file.
+    Apply { plan: PathBuf },
+    /// Resolve an interrupted journal without automatic retirement.
+    Recover,
+    /// Restore the exact journal; requires its reviewed SHA-256 hash.
+    Rollback {
+        #[arg(long)]
+        journal_hash: String,
+        #[arg(long)]
+        history: Option<PathBuf>,
+    },
+    /// Verify committed state and archive its complete rollback history.
+    Finalize {
+        #[arg(long)]
+        journal_hash: String,
+    },
+}
+fn guarded(database: Option<PathBuf>, action: GuardedCommand) -> Result<()> {
+    if matches!(action, GuardedCommand::Provenance) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rift::guarded::provenance())
+                .map_err(|e| rift::Error::Guarded(e.to_string()))?
+        );
+        return Ok(());
+    }
+    let database = database.ok_or_else(|| rift::Error::Guarded("--database is required".into()))?;
+    let json_error = |e: serde_json::Error| rift::Error::Guarded(e.to_string());
+    let mut hook_failed = false;
+    let output = match action {
+        GuardedCommand::Provenance => unreachable!(),
+        GuardedCommand::Preflight { request } => {
+            let request = serde_json::from_slice(&std::fs::read(request)?).map_err(json_error)?;
+            serde_json::to_string_pretty(&rift::guarded::preflight(database, request)?)
+                .map_err(json_error)?
+        }
+        GuardedCommand::Apply { plan } => {
+            let plan: rift::guarded::Plan =
+                serde_json::from_slice(&std::fs::read(plan)?).map_err(json_error)?;
+            if std::fs::canonicalize(database)? != plan.database {
+                return Err(rift::Error::Guarded("CLI database differs from plan".into()).into());
+            }
+            let outcome = rift::guarded::apply(&plan)?;
+            hook_failed = outcome.hook_error.is_some();
+            serde_json::to_string_pretty(&outcome).map_err(json_error)?
+        }
+        GuardedCommand::Recover => {
+            serde_json::to_string_pretty(&rift::guarded::recover(database)?).map_err(json_error)?
+        }
+        GuardedCommand::Finalize { journal_hash } => {
+            serde_json::to_string_pretty(&rift::guarded::finalize(database, &journal_hash)?)
+                .map_err(json_error)?
+        }
+        GuardedCommand::Rollback {
+            journal_hash,
+            history,
+        } => serde_json::to_string_pretty(&match history {
+            Some(history) => rift::guarded::rollback_history(database, history, &journal_hash)?,
+            None => rift::guarded::rollback(database, &journal_hash)?,
+        })
+        .map_err(json_error)?,
+    };
+    println!("{output}");
+    if hook_failed {
+        return Err(rift::Error::Guarded(
+            "retirement committed; postremove failed; journal retained".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn main() {
     if let Err(error) = run() {
         let message = match &error {
@@ -153,6 +236,7 @@ fn error_message(error: &rift::Error) -> String {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
+        Command::Guarded { action } => return guarded(cli.database, action),
         Command::Rpc => {
             const LIMIT: u64 = 1024 * 1024;
             let mut input = Vec::new();
@@ -179,6 +263,7 @@ fn run() -> Result<()> {
         None => Manager::open_default()?,
     };
     match command {
+        Command::Guarded { .. } => unreachable!(),
         Command::Rpc => unreachable!(),
         Command::ShellInit { shell } => {
             print_shell_init(shell);

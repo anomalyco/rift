@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Explicit fixture-only crash/failure injection. Never enable in release packaging.
+fixture-faults = []
+
 [dependencies]
+sha2 = "0.10"
+tempfile.workspace = true
 dirs.workspace = true
 libc.workspace = true
 rand.workspace = true

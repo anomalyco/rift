@@ -1,6 +1,7 @@
 mod config;
 mod filter;
 mod git;
+pub mod guarded;
 mod hook;
 mod id;
 mod marker;
@@ -26,6 +27,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(
+        "guarded lifecycle interrupted (committed={committed:?}, journal={journal}): {message}"
+    )]
+    GuardedInterrupted {
+        committed: Option<bool>,
+        journal: PathBuf,
+        message: String,
+    },
+    #[error("guarded lifecycle: {0}")]
+    Guarded(String),
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{operation} failed for {path}: {source}")]

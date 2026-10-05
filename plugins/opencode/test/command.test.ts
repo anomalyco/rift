@@ -154,3 +154,19 @@ test("signal deaths name the signal", async () => {
     await rm(temp, { recursive: true, force: true })
   }
 })
+
+test("stderr tails do not start inside a multi-byte character", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "opencode-rift-rpc-"))
+  const executable = join(temp, "rift")
+  await writeFile(
+    executable,
+    '#!/usr/bin/env node\nprocess.stderr.write("é".repeat(5000) + "\\n", () => process.exit(1))\n',
+  )
+  await chmod(executable, 0o755)
+  try {
+    const error = await rpc(executable, {}, AbortSignal.timeout(3000)).catch((error: Error) => error)
+    expect((error as Error).message).toBe(`Rift exited with status 1: ${"é".repeat(4095)}`)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})

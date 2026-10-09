@@ -1,4 +1,6 @@
 import { Worktree } from "@opencode/plugin"
+import { existsSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { RpcError, rpc } from "./command.js"
 
@@ -14,15 +16,26 @@ export interface Warning {
   message: string
 }
 
+export interface ExecutableLookup {
+  platform: string
+  arch: string
+  findOnPath(fileName: string): string | undefined
+  exists(filePath: string): boolean
+}
+
 interface Runtime {
   warning?: (input: Warning) => void
   rpc?: typeof rpc
+  lookup?: ExecutableLookup
 }
 
 const hints: Partial<Record<string, string>> = {
   workspace_not_initialized: "Rift source is not initialized; run `rift init` from the project root first",
   initialization_required: "This Rift workspace must be initialized first; run `rift init` from its root folder",
   missing_marker: "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
+  cow_unavailable:
+    "Copy-on-write cloning is unavailable on this volume. Create a Dev Drive and move the project onto it",
+  in_use: "Another program is using this workspace. Close it and retry",
 }
 
 function parseOptions(value: Record<string, unknown>): Options {
@@ -43,11 +56,45 @@ function parseOptions(value: Record<string, unknown>): Options {
   return { executable, copyAll, hooks, database }
 }
 
+export function resolveExecutable(configured: string, lookup: ExecutableLookup): string {
+  if (lookup.platform !== "win32" || configured.includes("/") || configured.includes("\\")) return configured
+  const base = configured.toLowerCase().endsWith(".exe") ? configured.slice(0, -4) : configured
+  const exe = lookup.findOnPath(`${base}.exe`)
+  if (exe) return exe
+  const cmd = lookup.findOnPath(`${base}.cmd`)
+  if (!cmd) return configured
+  // npm's .cmd shim cannot be spawned without a shell. The binary sits next to node_modules/.bin.
+  const bundled = path.win32.resolve(
+    path.win32.dirname(cmd),
+    "..",
+    "rift-snapshot",
+    "prebuilds",
+    `windows-${lookup.arch}`,
+    "rift.exe",
+  )
+  return lookup.exists(bundled) ? bundled : configured
+}
+
+function hostLookup(): ExecutableLookup {
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    findOnPath(fileName) {
+      const finder = process.platform === "win32" ? "where.exe" : "which"
+      const result = spawnSync(finder, [fileName], { encoding: "utf8" })
+      if (result.status !== 0) return undefined
+      return result.stdout.split(/\r?\n/).find((line) => line.trim())?.trim()
+    },
+    exists: existsSync,
+  }
+}
+
 export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runtime = {}) {
   const options = parseOptions(value)
+  const executable = resolveExecutable(options.executable, runtime.lookup ?? hostLookup())
   const call = runtime.rpc ?? rpc
   const request = (command: object, signal: AbortSignal) =>
-    call(options.executable, { database: options.database, ...command }, signal)
+    call(executable, { database: options.database, ...command }, signal)
   const failure = (error: unknown) => {
     const message =
       (error instanceof RpcError && hints[error.code]) || (error instanceof Error ? error.message : String(error))

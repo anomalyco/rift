@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::windows::ffi::OsStringExt;
-use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt, symlink_dir, symlink_file};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
@@ -53,6 +53,17 @@ impl Strategy for RefsStrategy {
     ) -> Result<StrategyInit> {
         verify_block_cloning(path)?;
         Ok(StrategyInit::AlreadyNative)
+    }
+
+    fn remove_directory(&self, path: &Path) -> Result<()> {
+        match fs::remove_dir_all(path) {
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                clear_read_only(path)?;
+                fs::remove_dir_all(path)?;
+                Ok(())
+            }
+            result => Ok(result?),
+        }
     }
 }
 
@@ -419,6 +430,27 @@ fn apply_basic(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
             FileAttributes: settable(source.FileAttributes),
         },
     )
+}
+
+// Volumes without POSIX delete semantics, such as plain ReFS on Windows Server 2022, refuse to
+// delete read-only files like Git objects. Reparse points lose their own read-only attribute
+// but are never descended into.
+fn clear_read_only(root: &Path) -> Result<()> {
+    let mut entries = WalkDir::new(root).follow_links(false).into_iter();
+    while let Some(entry) = entries.next() {
+        let entry = entry?;
+        let attributes = entry.metadata()?.file_attributes();
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && entry.file_type().is_dir() {
+            entries.skip_current_dir();
+        }
+        if attributes & FILE_ATTRIBUTE_READONLY != 0 {
+            set_attributes(
+                &open(entry.path(), FILE_WRITE_ATTRIBUTES)?,
+                attributes & !FILE_ATTRIBUTE_READONLY,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn set_attributes(file: &File, attributes: u32) -> io::Result<()> {

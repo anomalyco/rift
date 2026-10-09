@@ -84,6 +84,20 @@ fn production_refs_volume_round_trip() {
     assert_detached_git_copy(&source, &child);
     assert_shared_extents(&source.join("large.bin"), &child.join("large.bin"));
     assert_isolated(&source.join("large.bin"), &child.join("large.bin"));
+
+    manager.remove(&child).unwrap();
+    assert!(!child.exists());
+    let removed = manager.gc().unwrap();
+    assert_eq!(removed.len(), 1, "gc removed {removed:?}");
+    assert!(!removed[0].exists(), "gc left {}", removed[0].display());
+    assert_eq!(
+        fs::read_to_string(outside.join("keep.txt")).unwrap(),
+        "outside"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("nested/deeper/leaf.txt")).unwrap(),
+        "leaf"
+    );
     println!(
         "refs round trip: created {} with {} entries in {elapsed:?}",
         child.display(),
@@ -163,6 +177,42 @@ fn production_refs_clones_files_held_open_without_write_sharing() {
     );
     assert_shared_extents(&held, &child.join("held.bin"));
     println!("refs create cloned a file another handle held without write sharing");
+}
+
+#[test]
+fn production_refs_remove_deletes_read_only_trees_without_following_junctions() {
+    if !requires_refs_tests() {
+        return;
+    }
+    let temp = current_volume_temp();
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep.txt"), "outside").unwrap();
+    let read_only_tree = |name: &str| {
+        let root = temp.path().join(name);
+        fs::create_dir_all(root.join("objects/0d")).unwrap();
+        fs::write(root.join("objects/0d/8a474f"), "object").unwrap();
+        set_readonly(&root.join("objects/0d/8a474f"));
+        junction(&root.join("outside"), &outside);
+        root
+    };
+    let control = read_only_tree("control");
+    let std_result = fs::remove_dir_all(&control);
+    let tree = read_only_tree("tree");
+
+    default_strategy().remove_directory(&tree).unwrap();
+
+    assert!(!tree.exists());
+    assert_eq!(
+        fs::read_to_string(outside.join("keep.txt")).unwrap(),
+        "outside"
+    );
+    if control.exists() {
+        default_strategy().remove_directory(&control).unwrap();
+    }
+    println!(
+        "std::fs::remove_dir_all on a read-only tree here: {std_result:?}; RefsStrategy removed it"
+    );
 }
 
 #[test]
@@ -260,11 +310,7 @@ fn rich_git_workspace(root: &Path, outside: &Path) -> PathBuf {
     )
     .unwrap();
     fs::write(source.join("readonly.txt"), "read only").unwrap();
-    let mut permissions = fs::metadata(source.join("readonly.txt"))
-        .unwrap()
-        .permissions();
-    permissions.set_readonly(true);
-    fs::set_permissions(source.join("readonly.txt"), permissions).unwrap();
+    set_readonly(&source.join("readonly.txt"));
     fs::write(source.join("hidden.txt"), "hidden").unwrap();
     run(
         "attrib",
@@ -442,6 +488,12 @@ fn set_third_party_reparse_point(path: &Path) {
         "setting a third-party reparse point failed: {}",
         io::Error::last_os_error()
     );
+}
+
+fn set_readonly(path: &Path) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions).unwrap();
 }
 
 fn junction(link: &Path, target: &Path) {

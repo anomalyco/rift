@@ -141,9 +141,16 @@ fn production_refs_clones_files_written_moments_before() {
         }
         assert_eq!(cloned.len(), contents.len(), "{name} has the wrong length");
     }
+    let started = Instant::now();
+    manager
+        .create(Create::new(source.clone()).named("again"))
+        .unwrap();
+    let again = started.elapsed();
     println!(
-        "write-then-clone: created 64 freshly written 4 MiB files in {elapsed:?}, {:?} per file",
-        elapsed / 64
+        "write-then-clone: created 64 freshly written 4 MiB files in {elapsed:?}, {:?} per file; \
+         the same files again in {again:?}, {:?} per file",
+        elapsed / 64,
+        again / 64
     );
 }
 
@@ -213,6 +220,31 @@ fn production_refs_remove_deletes_read_only_trees_without_following_junctions() 
     println!(
         "std::fs::remove_dir_all on a read-only tree here: {std_result:?}; RefsStrategy removed it"
     );
+}
+
+#[test]
+fn production_refs_copy_rejects_storage_on_another_volume() {
+    if !requires_refs_tests() {
+        return;
+    }
+    let temp = current_volume_temp();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("file.txt"), "hello").unwrap();
+    let other_volume = TempDir::new().unwrap();
+    let destination = other_volume.path().join("child");
+
+    match default_strategy().copy_directory(&source, &destination, CopyMode::Filtered) {
+        Err(Error::CowUnavailable(message)) => {
+            assert!(
+                message.contains("on the same ReFS volume"),
+                "unexpected message: {message}"
+            );
+            println!("copy onto another volume: {message}");
+        }
+        result => panic!("copy onto another volume should fail, got {result:?}"),
+    }
+    assert!(!destination.exists());
 }
 
 #[test]

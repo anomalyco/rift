@@ -32,4 +32,58 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast -- --show-output
+
+  refs:
+    name: Windows tests (ReFS)
+    runs-on: windows-2022
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\target
+      RIFT_REQUIRE_REFS_TESTS: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Create a ReFS volume and copy the checkout onto it
+        run: ./scripts/ci/windows-refs.ps1 -Volume E: -CreatePartition
+
+      - name: Run tests on ReFS
+        working-directory: ${{ env.RIFT_CHECKOUT }}
+        run: cargo test --package rift --package rift-cli --locked --no-fail-fast -- --show-output
+
+  devdrive:
+    name: Windows tests (Dev Drive)
+    runs-on: windows-2025
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\target
+      RIFT_REQUIRE_REFS_TESTS: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create a Dev Drive
+        uses: samypr100/setup-dev-drive@v4
+        with:
+          drive-size: 10GB
+          drive-format: ReFS
+          native-dev-drive: true
+          trusted-dev-drive: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Copy the checkout onto the Dev Drive
+        run: ./scripts/ci/windows-refs.ps1 -Volume $env:DEV_DRIVE
+
+      - name: Run tests on the Dev Drive
+        working-directory: ${{ env.RIFT_CHECKOUT }}
+        run: cargo test --package rift --package rift-cli --locked --no-fail-fast -- --show-output

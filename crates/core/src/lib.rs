@@ -21,6 +21,7 @@ use name::RiftName;
 use registry::{MovedRecord, PathRecord, Record, Registry, SubtreeScope};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use strategy::{Strategy, StrategyInit};
 use thiserror::Error;
 
@@ -662,42 +663,44 @@ impl Manager {
     }
 }
 
-fn rename_into_trash(from: &Path, to: &Path) -> Result<()> {
-    #[cfg(windows)]
-    {
-        rename_into_trash_windows(from, to)
-    }
-    #[cfg(not(windows))]
-    {
-        fs::rename(from, to).map_err(Error::from)
-    }
-}
+const TRASH_RENAME_BACKOFF: &[Duration] = &[
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(40),
+    Duration::from_millis(80),
+    Duration::from_millis(160),
+    Duration::from_millis(320),
+    Duration::from_millis(370),
+];
 
-#[cfg(windows)]
-fn rename_into_trash_windows(from: &Path, to: &Path) -> Result<()> {
-    if let Err(error) = fs::rename(from, to) {
-        if !is_windows_in_use(&error) {
-            return Err(error.into());
-        }
-    } else {
-        return Ok(());
-    }
-    // A cwd or editor handle often closes within a second. After that, tell the user to close it.
-    for delay_ms in [0, 10, 25, 50, 100, 200, 400, 200] {
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+fn rename_into_trash(from: &Path, to: &Path) -> Result<()> {
+    let mut backoff = TRASH_RENAME_BACKOFF.iter();
+    loop {
         match fs::rename(from, to) {
             Ok(()) => return Ok(()),
-            Err(error) if is_windows_in_use(&error) => continue,
+            Err(error) if is_in_use(&error) => match backoff.next() {
+                Some(delay) => std::thread::sleep(*delay),
+                None => return Err(Error::InUse(from.to_path_buf())),
+            },
             Err(error) => return Err(error.into()),
         }
     }
-    Err(Error::InUse(from.to_path_buf()))
 }
 
-#[cfg(windows)]
-fn is_windows_in_use(error: &std::io::Error) -> bool {
-    // ERROR_ACCESS_DENIED is 5. ERROR_SHARING_VIOLATION is 32.
-    matches!(error.raw_os_error(), Some(5 | 32))
+fn is_in_use(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+        matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn default_database_path() -> Result<PathBuf> {
@@ -707,8 +710,6 @@ fn default_database_path() -> Result<PathBuf> {
 }
 
 fn existing_directory(path: &Path) -> Result<PathBuf> {
-    // `std::fs::canonicalize` returns `\\?\` paths on Windows. Those break Git,
-    // shells, and path comparisons, so store the legacy form when it is unambiguous.
     let path = dunce::canonicalize(path)?;
     if !path.is_dir() {
         return Err(Error::Path(format!("not a directory: {}", path.display())));

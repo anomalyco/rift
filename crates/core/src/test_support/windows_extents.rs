@@ -6,7 +6,8 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::{
-    FSCTL_GET_RETRIEVAL_POINTERS_AND_REFCOUNT, STARTING_VCN_INPUT_BUFFER,
+    FSCTL_GET_RETRIEVAL_POINTERS_AND_REFCOUNT, RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER,
+    RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER_0, STARTING_VCN_INPUT_BUFFER,
 };
 
 pub(crate) fn assert_shared_extents(source: &Path, clone: &Path) {
@@ -45,15 +46,28 @@ fn reference_counts(path: &Path) -> io::Result<Vec<u32>> {
             return Err(error);
         }
     }
-    // RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER: a u32 extent count, the starting VCN, then
-    // extents of { NextVcn: i64, Lcn: i64, ReferenceCount: u32 } padded to three words.
-    let extents = (output[0] & u64::from(u32::MAX)) as usize;
-    Ok(output[2..]
-        .as_chunks::<3>()
-        .0
+    // SAFETY: `output` is aligned for the ioctl structs and holds the reply. The slice length
+    // stays inside that allocation.
+    let extents = unsafe {
+        let header = output
+            .as_ptr()
+            .cast::<RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER>();
+        let count = (*header).ExtentCount as usize;
+        let extents_at = std::mem::offset_of!(RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER, Extents);
+        let available = (output.len() * size_of::<u64>()).saturating_sub(extents_at)
+            / size_of::<RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER_0>();
+        std::slice::from_raw_parts(
+            output
+                .as_ptr()
+                .cast::<u8>()
+                .add(extents_at)
+                .cast::<RETRIEVAL_POINTERS_AND_REFCOUNT_BUFFER_0>(),
+            count.min(available),
+        )
+    };
+    Ok(extents
         .iter()
-        .take(extents)
-        .filter(|[_, lcn, _]| *lcn as i64 != -1)
-        .map(|[_, _, count]| *count as u32)
+        .filter(|extent| extent.Lcn != -1)
+        .map(|extent| extent.ReferenceCount)
         .collect())
 }

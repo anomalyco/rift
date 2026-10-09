@@ -21,9 +21,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_SYSTEM, FILE_ATTRIBUTE_TAG_INFO, FILE_ATTRIBUTE_TEMPORARY, FILE_BASIC_INFO,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
     FILE_INFO_BY_HANDLE_CLASS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FileAttributeTagInfo,
-    FileBasicInfo, FileIdInfo, FileStandardInfo, FileStreamInfo, GetFileInformationByHandleEx,
-    GetVolumeInformationByHandleW, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, SetFileInformationByHandle,
+    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_STREAM_INFO, FILE_WRITE_ATTRIBUTES,
+    FileAttributeTagInfo, FileBasicInfo, FileIdInfo, FileStandardInfo, FileStreamInfo,
+    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
+    SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::{
@@ -340,13 +341,19 @@ fn stream_names(file: &File) -> io::Result<Vec<OsString>> {
         .collect::<Vec<_>>();
     let mut names = Vec::new();
     let mut offset = 0;
-    // FILE_STREAM_INFO: NextEntryOffset and StreamNameLength (in bytes) as u32, two i64 sizes,
-    // then the UTF-16 name.
-    while let Some(header) = bytes.get(offset..offset + 24) {
-        let next = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let length = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    const NEXT_ENTRY_OFFSET: usize = std::mem::offset_of!(FILE_STREAM_INFO, NextEntryOffset);
+    const STREAM_NAME_LENGTH: usize = std::mem::offset_of!(FILE_STREAM_INFO, StreamNameLength);
+    const STREAM_NAME: usize = std::mem::offset_of!(FILE_STREAM_INFO, StreamName);
+    let u32_at = |header: &[u8], at: usize| {
+        let mut unit = [0; 4];
+        unit.copy_from_slice(&header[at..at + size_of::<u32>()]);
+        u32::from_le_bytes(unit) as usize
+    };
+    while let Some(header) = bytes.get(offset..offset + STREAM_NAME) {
+        let next = u32_at(header, NEXT_ENTRY_OFFSET);
+        let length = u32_at(header, STREAM_NAME_LENGTH);
         let name = bytes
-            .get(offset + 24..offset + 24 + length)
+            .get(offset + STREAM_NAME..offset + STREAM_NAME + length)
             .ok_or_else(|| io::Error::other("malformed alternate stream information"))?;
         let name = OsString::from_wide(
             &name
@@ -567,9 +574,8 @@ fn verify_block_cloning(directory: &Path) -> Result<()> {
     result.and(cleanup.map_err(Error::from))
 }
 
-// Several clusters at either ReFS cluster size (4 KiB or 64 KiB) plus a partial one. A probe that
-// fits in one partial cluster proves nothing, because ReFS shares no storage for a file's tail.
-const PROBE_SIZE: usize = 3 * 65_536 + 1;
+const MAX_CLUSTER_SIZE: usize = 64 * 1024;
+const PROBE_SIZE: usize = 3 * MAX_CLUSTER_SIZE + 1;
 
 fn probe(source: &Path, clone: &Path) -> Result<()> {
     let contents = (0..PROBE_SIZE)

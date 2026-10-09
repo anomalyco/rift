@@ -38,6 +38,10 @@ eval "$(rift shell-init zsh)" # or bash
 rift shell-init nushell | save -f (($nu.user-autoload-dirs | first) | path join "rift.nu")
 ```
 
+```powershell
+Invoke-Expression (& { (rift shell-init pwsh | Out-String) })
+```
+
 ## Lifecycle Hooks
 
 Add `.rift.toml` to a workspace to run commands around creation and removal:
@@ -70,6 +74,8 @@ run = "docker compose -p rift-$RIFT_ID down -v"
 
 Hooks receive `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. Hook output goes to stderr so
 workspace paths on stdout stay machine-readable. Use `--no-hooks` to skip hooks.
+
+On Windows, hooks run through `cmd.exe`, so write `%RIFT_ID%` instead of `$RIFT_ID`.
 
 ## Agents and OpenCode
 
@@ -153,7 +159,7 @@ keeps the source directory, removes its `.rift` marker, and trashes registered d
 | Linux x64         | btrfs snapshots          | `rift init` converts a directory into a subvolume       |
 | Linux x64         | Native per-file reflinks | XFS and other filesystems with working `FICLONE`        |
 | macOS arm64 / x64 | APFS `clonefile`         | Requires an APFS volume                                 |
-| Windows x64       | None                     | Package is published; workspace creation is unsupported |
+| Windows x64       | ReFS block cloning       | Per-file `FSCTL_DUPLICATE_EXTENTS_TO_FILE` on a ReFS volume such as a [Dev Drive](https://learn.microsoft.com/windows/dev-drive/). `rift init` refuses NTFS |
 
 Each managed workspace has a `.rift` marker containing its ID. A SQLite registry stores paths, parents, and trash
 entries. Default storage is adjacent to the source root:
@@ -166,6 +172,18 @@ entries. Default storage is adjacent to the source root:
 
 Workspaces never overlap, concurrent creates never delete each other's destinations, and removal is a trash operation
 until `rift gc` runs.
+
+## Windows
+
+The project must be on a ReFS volume, and `rift create --into` must point to a directory on the same volume. Rift
+clones each file separately, so `rift create` takes longer as the number of files grows.
+
+`rift remove` fails with "another program is using the workspace" while another program has a file in the workspace
+open or has its working directory there. Close that program and run `rift remove` again.
+
+`rift create` recreates symbolic links and junctions. Recreating a symbolic link needs Windows Developer Mode or
+administrator rights. `rift create` refuses encrypted files and every other kind of reparse point, such as cloud
+placeholder files.
 
 ## JavaScript API
 

@@ -267,6 +267,7 @@ fn run() -> Result<()> {
             let at = manager.workspace(at.unwrap_or(std::env::current_dir()?))?;
             let cwd = dunce::canonicalize(std::env::current_dir()?)?;
             if children {
+                leave_trashed_directory(&manager, &at, &cwd, true, &[])?;
                 let result = manager.remove_all_with_options(
                     &at,
                     RemoveOptions::default().hook_mode(if no_hooks {
@@ -294,6 +295,7 @@ fn run() -> Result<()> {
                 let ancestors = manager.ancestors(&at)?;
                 let unregistering_root = ancestors.is_empty();
                 require_force_for_root(unregistering_root, force)?;
+                leave_trashed_directory(&manager, &at, &cwd, false, &ancestors)?;
                 let destination = if cli.shell_cwd && cwd.starts_with(&at) {
                     if unregistering_root {
                         Some(at.clone())
@@ -374,6 +376,49 @@ fn git_root(path: &std::path::Path) -> PathBuf {
         .to_path_buf()
 }
 
+fn leave_trashed_directory(
+    manager: &Manager,
+    at: &std::path::Path,
+    cwd: &std::path::Path,
+    children: bool,
+    ancestors: &[PathBuf],
+) -> Result<()> {
+    let preserving = children || ancestors.is_empty();
+    let descendants = if preserving {
+        manager.descendants(at)?
+    } else {
+        Vec::new()
+    };
+    let Some(stay) = directory_outside_trash(cwd, at, children, ancestors, &descendants) else {
+        return Ok(());
+    };
+    std::env::set_current_dir(stay)?;
+    Ok(())
+}
+
+fn directory_outside_trash(
+    cwd: &std::path::Path,
+    at: &std::path::Path,
+    children: bool,
+    ancestors: &[PathBuf],
+    descendants: &[PathBuf],
+) -> Option<PathBuf> {
+    let preserving = children || ancestors.is_empty();
+    let moving = if preserving {
+        descendants.iter().any(|path| cwd.starts_with(path))
+    } else {
+        cwd.starts_with(at)
+    };
+    if !moving {
+        return None;
+    }
+    if preserving {
+        Some(at.to_path_buf())
+    } else {
+        ancestors.first().cloned()
+    }
+}
+
 fn require_force_for_root(unregistering_root: bool, force: bool) -> Result<()> {
     if unregistering_root && !force {
         return Err(CliError::ForceRequired);
@@ -429,6 +474,52 @@ mod tests {
 
         assert_eq!(init_target(&manager, &nested, false).unwrap().0, root);
         assert_eq!(init_target(&manager, &nested, true).unwrap().0, nested);
+    }
+
+    #[test]
+    fn remove_stands_in_the_parent_before_trashing_a_child() {
+        let parent = PathBuf::from("work").join("app");
+        let child = parent.join(".rifts").join("app").join("child");
+
+        assert_eq!(
+            directory_outside_trash(
+                &child.join("src"),
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                &[],
+            ),
+            Some(parent.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&parent, &child, false, std::slice::from_ref(&parent), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn remove_stands_in_the_preserved_workspace_before_trashing_descendants() {
+        let root = PathBuf::from("work").join("app");
+        let child = PathBuf::from("work").join(".rifts").join("app").join("child");
+
+        assert_eq!(
+            directory_outside_trash(
+                &child.join("src"),
+                &root,
+                true,
+                &[],
+                std::slice::from_ref(&child),
+            ),
+            Some(root.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&child, &root, false, &[], std::slice::from_ref(&child)),
+            Some(root.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&root, &root, false, &[], &[child]),
+            None
+        );
     }
 
     #[test]

@@ -13,6 +13,8 @@ mod strategy;
 mod linux_filesystem_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod test_support;
+#[cfg(all(test, windows))]
+mod windows_filesystem_tests;
 
 use id::RiftId;
 use name::RiftName;

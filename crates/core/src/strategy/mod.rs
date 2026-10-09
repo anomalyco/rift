@@ -1,6 +1,8 @@
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos", windows))))]
+use crate::Error;
+#[cfg(test)]
+use crate::filter::CopyFilter;
 use crate::{CopyMode, InitProgress, Result};
-#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
-use crate::{Error, filter::CopyFilter};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -13,6 +15,8 @@ mod btrfs;
 mod linux;
 #[cfg(target_os = "linux")]
 mod reflink;
+#[cfg(windows)]
+mod refs;
 
 pub(crate) trait Strategy {
     fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()>;
@@ -52,14 +56,17 @@ pub(crate) fn default_strategy() -> Box<dyn Strategy> {
     #[cfg(target_os = "macos")]
     return Box::new(apfs::ApfsStrategy);
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    return Box::new(refs::RefsStrategy);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     return Box::new(UnsupportedStrategy);
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 struct UnsupportedStrategy;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Strategy for UnsupportedStrategy {
     fn copy_directory(&self, _from: &Path, _to: &Path, _mode: CopyMode) -> Result<()> {
         Err(Error::CowUnavailable(

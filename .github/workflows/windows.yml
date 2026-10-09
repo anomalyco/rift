@@ -19,6 +19,8 @@ jobs:
   test:
     name: Windows tests (NTFS)
     runs-on: windows-latest
+    env:
+      RIFT_REQUIRE_UNSUPPORTED_WINDOWS_TESTS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

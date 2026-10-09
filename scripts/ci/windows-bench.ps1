@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $Volume,
     [Parameter(Mandatory = $true)] [string] $Bench,
     [int] $Samples = 5,
-    [string[]] $Repos = @('cargo', 'TypeScript')
+    [string[]] $Only = @('cargo', 'TypeScript')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,8 +30,11 @@ function Time([scriptblock] $Block) {
     $watch.Elapsed.TotalMilliseconds
 }
 
-foreach ($name in $repos.Keys) {
-    if ($Repos -notcontains $name) { continue }
+$selected = @($repos.Keys | Where-Object { $Only -contains $_ })
+if ($selected.Count -eq 0) { throw "no bench repos matched: $($Only -join ', ')" }
+Write-Output "==> repos: $($selected -join ', '), samples: $Samples"
+
+foreach ($name in $selected) {
     $source = Join-Path $root $name
     git clone --quiet --depth 1 $repos[$name] $source
     if ($LASTEXITCODE -ne 0) { throw "clone of $name failed" }

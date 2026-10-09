@@ -54,7 +54,7 @@ jobs:
         run: |
           $bench = Get-ChildItem target\release\deps\create-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           Get-Volume -DriveLetter $env:DEV_DRIVE.TrimEnd(':') | Format-List FileSystem, AllocationUnitSize, Size | Out-String | Write-Output
-          ./scripts/ci/windows-bench.ps1 -Volume $env:DEV_DRIVE -Bench $bench.FullName -Samples 3 -Repos cargo
+          ./scripts/ci/windows-bench.ps1 -Volume $env:DEV_DRIVE -Bench $bench.FullName -Samples 3 -Only cargo
 
       - name: Upload results
         if: always()

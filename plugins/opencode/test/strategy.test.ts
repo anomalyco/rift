@@ -100,7 +100,9 @@ describe("Rift workspace strategy", () => {
   })
 
   test("resolves a Windows executable without spawning the npm shim", () => {
-    const bundled = "C:\\proj\\node_modules\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const local = "C:\\proj\\node_modules\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const global = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const globalBesideShim = "C:\\Users\\me\\AppData\\Roaming\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
     const lookup = (found: Record<string, string | undefined>, present: string[]): ExecutableLookup => ({
       platform: "win32",
       arch: "x64",
@@ -113,8 +115,17 @@ describe("Rift workspace strategy", () => {
       "C:\\Tools\\rift.exe",
     )
     expect(
-      resolveExecutable("rift", lookup({ "rift.cmd": "C:\\proj\\node_modules\\.bin\\rift.cmd" }, [bundled])),
-    ).toBe(bundled)
+      resolveExecutable("rift", lookup({ "rift.cmd": "C:\\proj\\node_modules\\.bin\\rift.cmd" }, [local])),
+    ).toBe(local)
+    expect(
+      resolveExecutable("rift", lookup({ "rift.cmd": "C:\\Users\\me\\AppData\\Roaming\\npm\\rift.cmd" }, [global])),
+    ).toBe(global)
+    expect(
+      resolveExecutable(
+        "rift",
+        lookup({ "rift.cmd": "C:\\Users\\me\\AppData\\Roaming\\npm\\rift.cmd" }, [global, globalBesideShim]),
+      ),
+    ).toBe(global)
     expect(resolveExecutable("rift", lookup({ "rift.cmd": "C:\\proj\\node_modules\\.bin\\rift.cmd" }, []))).toBe("rift")
     expect(resolveExecutable("C:\\rift\\rift.exe", lookup({}, []))).toBe("C:\\rift\\rift.exe")
     expect(resolveExecutable("rift", { ...lookup({}, []), platform: "linux" })).toBe("rift")

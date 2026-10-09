@@ -63,16 +63,14 @@ export function resolveExecutable(configured: string, lookup: ExecutableLookup):
   if (exe) return exe
   const cmd = lookup.findOnPath(`${base}.cmd`)
   if (!cmd) return configured
-  // npm's .cmd shim cannot be spawned without a shell. The binary sits next to node_modules/.bin.
-  const bundled = path.win32.resolve(
-    path.win32.dirname(cmd),
-    "..",
-    "rift-snapshot",
-    "prebuilds",
-    `windows-${lookup.arch}`,
-    "rift.exe",
-  )
-  return lookup.exists(bundled) ? bundled : configured
+  // npm's .cmd shim cannot be spawned without a shell. The binary is <shim dir>\node_modules\rift-snapshot globally and <shim dir>\..\rift-snapshot locally.
+  const shimDir = path.win32.dirname(cmd)
+  const bundled = (root: string) =>
+    path.win32.resolve(shimDir, root, "rift-snapshot", "prebuilds", `windows-${lookup.arch}`, "rift.exe")
+  const global = bundled("node_modules")
+  const local = bundled("..")
+  if (lookup.exists(global)) return global
+  return lookup.exists(local) ? local : configured
 }
 
 function hostLookup(): ExecutableLookup {

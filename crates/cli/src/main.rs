@@ -34,6 +34,8 @@ enum Shell {
     Bash,
     Zsh,
     Nushell,
+    #[value(alias = "powershell")]
+    Pwsh,
 }
 
 impl Shell {
@@ -75,6 +77,40 @@ impl Shell {
       ^{executable} ...$rest
     }}
   }}
+}}"#,
+                )
+            }
+            Shell::Pwsh => {
+                let executable = powershell_quote(executable);
+                format!(
+                    r#"function global:rift {{
+    $exe = {executable}
+    $command = $null
+    for ($i = 0; $i -lt $args.Count; $i++) {{
+        $arg = [string]$args[$i]
+        if ($arg -eq '--database') {{ $i++; continue }}
+        if ($arg -like '-*') {{ continue }}
+        $command = $arg
+        break
+    }}
+    if ($command -notin 'init','create','remove') {{
+        & $exe @args
+        return
+    }}
+    $encoding = [Console]::OutputEncoding
+    $code = 0
+    $cwd = $null
+    try {{
+        [Console]::OutputEncoding = [System.Text.Utf8Encoding]::new()
+        $cwd = & $exe --shell-cwd @args | Select-Object -Last 1
+        $code = $LASTEXITCODE
+    }} finally {{
+        [Console]::OutputEncoding = $encoding
+    }}
+    if ($cwd) {{
+        Set-Location -LiteralPath $cwd -ErrorAction Stop
+    }}
+    $global:LASTEXITCODE = $code
 }}"#,
                 )
             }
@@ -435,6 +471,10 @@ fn posix_shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn nushell_shell_quote(value: &str) -> String {
     let mut hashes = String::from("#");
     while value.contains(&format!("'{}", hashes)) {
@@ -608,6 +648,60 @@ mod tests {
 }"#;
 
         assert_eq!(Shell::Nushell.init_script("/tmp/rift"), wrapper);
+    }
+
+    #[test]
+    fn shell_init_accepts_pwsh_and_powershell() {
+        for name in ["pwsh", "powershell"] {
+            let cli = Cli::try_parse_from(["rift", "shell-init", name]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::ShellInit { shell: Shell::Pwsh }
+            ));
+        }
+    }
+
+    #[test]
+    fn shell_init_renders_powershell_wrapper() {
+        let wrapper = r#"function global:rift {
+    $exe = 'C:\Program Files\rift.exe'
+    $command = $null
+    for ($i = 0; $i -lt $args.Count; $i++) {
+        $arg = [string]$args[$i]
+        if ($arg -eq '--database') { $i++; continue }
+        if ($arg -like '-*') { continue }
+        $command = $arg
+        break
+    }
+    if ($command -notin 'init','create','remove') {
+        & $exe @args
+        return
+    }
+    $encoding = [Console]::OutputEncoding
+    $code = 0
+    $cwd = $null
+    try {
+        [Console]::OutputEncoding = [System.Text.Utf8Encoding]::new()
+        $cwd = & $exe --shell-cwd @args | Select-Object -Last 1
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $encoding
+    }
+    if ($cwd) {
+        Set-Location -LiteralPath $cwd -ErrorAction Stop
+    }
+    $global:LASTEXITCODE = $code
+}"#;
+
+        assert_eq!(
+            Shell::Pwsh.init_script(r"C:\Program Files\rift.exe"),
+            wrapper
+        );
+        assert!(
+            Shell::Pwsh
+                .init_script(r"C:\it's\rift.exe")
+                .contains("$exe = 'C:\\it''s\\rift.exe'")
+        );
     }
 
     #[test]

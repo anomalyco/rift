@@ -67,6 +67,8 @@ pub enum Error {
     MissingRift(PathBuf),
     #[error("workspace path overlaps another managed workspace: {0}")]
     OverlappingWorkspace(PathBuf),
+    #[error("another program is using the workspace {0}; close it and retry")]
+    InUse(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
     #[error("{hook} hook failed at {path}: `{command}` {message}")]
@@ -522,11 +524,11 @@ impl Manager {
                 ))
             })?;
             fs::create_dir_all(trash_parent)?;
-            if let Err(error) = fs::rename(&target.original_path, &target.trash_path) {
+            if let Err(error) = rename_into_trash(&target.original_path, &target.trash_path) {
                 for record in moved.iter().rev() {
                     let _ = fs::rename(&record.trash_path, &record.original_path);
                 }
-                return Err(error.into());
+                return Err(error);
             }
             moved.push(target);
         }
@@ -656,6 +658,44 @@ impl Manager {
         }
         Ok(current)
     }
+}
+
+fn rename_into_trash(from: &Path, to: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        rename_into_trash_windows(from, to)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(from, to).map_err(Error::from)
+    }
+}
+
+#[cfg(windows)]
+fn rename_into_trash_windows(from: &Path, to: &Path) -> Result<()> {
+    if let Err(error) = fs::rename(from, to) {
+        if !is_windows_in_use(&error) {
+            return Err(error.into());
+        }
+    } else {
+        return Ok(());
+    }
+    // A cwd or editor handle often closes within a second. After that, tell the user to close it.
+    for delay_ms in [0, 10, 25, 50, 100, 200, 400, 200] {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_windows_in_use(&error) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::InUse(from.to_path_buf()))
+}
+
+#[cfg(windows)]
+fn is_windows_in_use(error: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED is 5. ERROR_SHARING_VIOLATION is 32.
+    matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 fn default_database_path() -> Result<PathBuf> {

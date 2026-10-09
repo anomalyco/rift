@@ -1296,6 +1296,41 @@ fn windows_registry_paths_round_trip_without_verbatim_prefix() {
 }
 
 #[cfg(windows)]
+#[test]
+fn remove_reports_in_use_while_a_file_is_open() {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 1;
+
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager
+        .create(create_input(source.clone(), "busy"))
+        .unwrap();
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(child.join("file.txt"))
+        .unwrap();
+
+    let error = manager.remove(&child).unwrap_err();
+
+    assert!(matches!(error, Error::InUse(ref path) if path == &child));
+    assert!(error.to_string().contains("close it and retry"));
+    assert!(child.exists());
+    assert_eq!(manager.list(&source).unwrap(), vec![child.clone()]);
+    assert_eq!(manager.workspace(&child).unwrap(), child);
+
+    drop(held);
+    manager.remove(&child).unwrap();
+    assert!(!child.exists());
+    assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[cfg(windows)]
 fn assert_no_verbatim_prefix(path: &Path) {
     let text = path.to_string_lossy();
     assert!(!text.starts_with(r"\\?\"), "{text}");

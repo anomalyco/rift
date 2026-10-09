@@ -41,6 +41,7 @@ export type RiftErrorCode =
   | "names_exhausted"
   | "missing_rift"
   | "inside_source"
+  | "in_use"
   | "invalid_config"
   | "hook_failed"
   | "invalid_request"

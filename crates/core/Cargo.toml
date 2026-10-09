@@ -20,6 +20,14 @@ walkdir.workspace = true
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 git2 = { version = "0.20", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true
 

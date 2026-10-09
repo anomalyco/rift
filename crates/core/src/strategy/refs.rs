@@ -1,25 +1,39 @@
 use super::{Strategy, StrategyInit, create_destination};
 use crate::{CopyMode, Error, InitProgress, Result, filter::CopyFilter};
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::fs::{OpenOptionsExt, symlink_dir, symlink_file};
 use std::os::windows::io::AsRawHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use walkdir::WalkDir;
-use windows_sys::Win32::Foundation::{ERROR_BLOCK_TOO_MANY_REFERENCES, GENERIC_READ, MAX_PATH};
+use windows_sys::Win32::Foundation::{
+    ERROR_BLOCK_TOO_MANY_REFERENCES, ERROR_HANDLE_EOF, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA,
+    ERROR_PRIVILEGE_NOT_HELD, GENERIC_READ, GENERIC_WRITE, MAX_PATH,
+};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_SPARSE_FILE, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo,
-    FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
+    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED,
+    FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+    FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE,
+    FILE_ATTRIBUTE_SYSTEM, FILE_ATTRIBUTE_TAG_INFO, FILE_ATTRIBUTE_TEMPORARY, FILE_BASIC_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+    FILE_INFO_BY_HANDLE_CLASS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FileAttributeTagInfo,
+    FileBasicInfo, FileIdInfo, FileStandardInfo, FileStreamInfo, GetFileInformationByHandleEx,
+    GetVolumeInformationByHandleW, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::{
     DUPLICATE_EXTENTS_DATA, FILE_SET_SPARSE_BUFFER, FSCTL_DUPLICATE_EXTENTS_TO_FILE,
     FSCTL_GET_INTEGRITY_INFORMATION, FSCTL_GET_INTEGRITY_INFORMATION_BUFFER,
-    FSCTL_SET_INTEGRITY_INFORMATION, FSCTL_SET_INTEGRITY_INFORMATION_BUFFER, FSCTL_SET_SPARSE,
+    FSCTL_GET_REPARSE_POINT, FSCTL_SET_INTEGRITY_INFORMATION,
+    FSCTL_SET_INTEGRITY_INFORMATION_BUFFER, FSCTL_SET_REPARSE_POINT, FSCTL_SET_SPARSE,
+};
+use windows_sys::Win32::System::SystemServices::{
+    IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
 };
 
 pub(super) struct RefsStrategy;
@@ -46,14 +60,30 @@ impl Strategy for RefsStrategy {
 enum EntryKind {
     Directory,
     File,
+    Symlink { directory: bool },
+    Junction,
     Unsupported,
 }
 
 impl EntryKind {
-    fn classify(attributes: u32) -> Self {
+    fn of(file: &File, attributes: u32) -> io::Result<Self> {
+        let reparse_tag = if attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            0
+        } else {
+            information::<FILE_ATTRIBUTE_TAG_INFO>(file)?.ReparseTag
+        };
+        Ok(Self::classify(attributes, reparse_tag))
+    }
+
+    fn classify(attributes: u32, reparse_tag: u32) -> Self {
+        let directory = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            Self::Unsupported
-        } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            match reparse_tag {
+                IO_REPARSE_TAG_SYMLINK => Self::Symlink { directory },
+                IO_REPARSE_TAG_MOUNT_POINT if directory => Self::Junction,
+                _ => Self::Unsupported,
+            }
+        } else if directory {
             Self::Directory
         } else if attributes & FILE_ATTRIBUTE_ENCRYPTED != 0 {
             Self::Unsupported
@@ -84,6 +114,7 @@ struct SourceFile<'a> {
     file: File,
     basic: FILE_BASIC_INFO,
     size: u64,
+    links: u32,
 }
 
 impl<'a> SourceFile<'a> {
@@ -94,6 +125,7 @@ impl<'a> SourceFile<'a> {
             file,
             basic,
             size: standard.EndOfFile as u64,
+            links: standard.NumberOfLinks,
         })
     }
 }
@@ -118,6 +150,9 @@ fn volume(path: &Path) -> io::Result<u64> {
 }
 
 fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> {
+    let root: FILE_BASIC_INFO = information(&open(from, FILE_READ_ATTRIBUTES)?)?;
+    let mut hard_links = HashMap::new();
+    let mut directories = Vec::new();
     for entry in WalkDir::new(from)
         .min_depth(1)
         .follow_links(false)
@@ -140,12 +175,36 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
         );
         let file = open(source, GENERIC_READ)?;
         let basic: FILE_BASIC_INFO = information(&file)?;
-        match EntryKind::classify(basic.FileAttributes) {
-            EntryKind::Directory => fs::create_dir(&destination)?,
-            EntryKind::File => clone_file(&SourceFile::new(source, file, basic)?, &destination)?,
+        match EntryKind::of(&file, basic.FileAttributes)? {
+            EntryKind::Directory => {
+                fs::create_dir(&destination)?;
+                directories.push((basic, destination));
+            }
+            EntryKind::File => {
+                let source = SourceFile::new(source, file, basic)?;
+                if source.links > 1 {
+                    let id = FileId::of(&source.file)?;
+                    if let Some(existing) = hard_links.get(&id) {
+                        fs::hard_link(existing, &destination)?;
+                    } else {
+                        clone_file(&source, &destination)?;
+                        hard_links.insert(id, destination);
+                    }
+                } else {
+                    clone_file(&source, &destination)?;
+                }
+            }
+            EntryKind::Symlink { directory } => {
+                copy_symlink(source, &basic, &destination, directory)?;
+            }
+            EntryKind::Junction => copy_junction(&file, &basic, &destination)?,
             EntryKind::Unsupported => return Err(Error::UnsupportedEntry(source.to_path_buf())),
         }
     }
+    for (basic, destination) in directories.into_iter().rev() {
+        apply_basic(&open(&destination, FILE_WRITE_ATTRIBUTES)?, &basic)?;
+    }
+    apply_basic(&open(to, FILE_WRITE_ATTRIBUTES)?, &root)?;
     Ok(())
 }
 
@@ -155,16 +214,22 @@ fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(destination)?;
-    if source.size == 0 {
-        return Ok(());
+    if source.size > 0 {
+        clone_data(source, &target)?;
     }
+    copy_streams(source, destination)?;
+    apply_basic(&target, &source.basic)?;
+    Ok(())
+}
+
+fn clone_data(source: &SourceFile, target: &File) -> Result<()> {
     // A sparse destination keeps ReFS from allocating clusters for the length set below, and a
     // sparse source can only be cloned into a sparse destination.
-    set_sparse(&target, true)
+    set_sparse(target, true)
         .map_err(|error| cow_unavailable("prepare the clone of", source.path, error))?;
     let integrity = integrity(&source.file)
         .map_err(|error| cow_unavailable("read the integrity settings of", source.path, error))?;
-    match_integrity(&integrity, &target);
+    match_integrity(&integrity, target);
     target.set_len(source.size)?;
     let cluster_size = u64::from(integrity.ClusterSizeInBytes);
     if !cluster_size.is_power_of_two() || cluster_size > CLONE_CHUNK {
@@ -174,11 +239,177 @@ fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
         )));
     }
     for (offset, length) in clone_regions(source.size, cluster_size) {
-        duplicate_extents(&source.file, &target, offset, length)
+        duplicate_extents(&source.file, target, offset, length)
             .map_err(|error| cow_unavailable("clone", source.path, error))?;
     }
     if source.basic.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE == 0 {
-        set_sparse(&target, false)?;
+        set_sparse(target, false)?;
+    }
+    Ok(())
+}
+
+// Streams are copied by value. Cloning into an alternate data stream crashed ReFS before a
+// hotfix (microsoft/CopyOnWrite#24).
+fn copy_streams(source: &SourceFile, destination: &Path) -> Result<()> {
+    for stream in stream_names(&source.file)? {
+        let mut reader = File::open(with_stream(source.path, &stream))?;
+        let mut writer = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(with_stream(destination, &stream))?;
+        io::copy(&mut reader, &mut writer)?;
+    }
+    Ok(())
+}
+
+fn with_stream(path: &Path, stream: &OsStr) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
+    path.push(stream);
+    path.into()
+}
+
+fn stream_names(file: &File) -> io::Result<Vec<OsString>> {
+    let mut buffer = vec![0_u64; 512];
+    loop {
+        // SAFETY: `buffer` is writable for its full length in bytes and 8-byte aligned, as
+        // FILE_STREAM_INFO requires.
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileStreamInfo,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * size_of::<u64>()) as u32,
+            )
+        };
+        if succeeded != 0 {
+            break;
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_MORE_DATA | ERROR_INSUFFICIENT_BUFFER) => buffer.resize(buffer.len() * 2, 0),
+            Some(ERROR_HANDLE_EOF) => return Ok(Vec::new()),
+            _ => return Err(error),
+        }
+    }
+    let bytes = buffer
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut names = Vec::new();
+    let mut offset = 0;
+    // FILE_STREAM_INFO: NextEntryOffset and StreamNameLength (in bytes) as u32, two i64 sizes,
+    // then the UTF-16 name.
+    while let Some(header) = bytes.get(offset..offset + 24) {
+        let next = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let length = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let name = bytes
+            .get(offset + 24..offset + 24 + length)
+            .ok_or_else(|| io::Error::other("malformed alternate stream information"))?;
+        let name = OsString::from_wide(
+            &name
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|unit| u16::from_le_bytes(*unit))
+                .collect::<Vec<_>>(),
+        );
+        if name != "::$DATA" {
+            names.push(name);
+        }
+        if next == 0 {
+            break;
+        }
+        offset += next;
+    }
+    Ok(names)
+}
+
+fn copy_symlink(
+    source: &Path,
+    basic: &FILE_BASIC_INFO,
+    destination: &Path,
+    directory: bool,
+) -> Result<()> {
+    let target = fs::read_link(source)?;
+    let created = if directory {
+        symlink_dir(&target, destination)
+    } else {
+        symlink_file(&target, destination)
+    };
+    created.map_err(|error| {
+        if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32) {
+            Error::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "creating the symbolic link {} needs Windows Developer Mode or administrator rights: {error}",
+                    destination.display()
+                ),
+            ))
+        } else {
+            error.into()
+        }
+    })?;
+    apply_basic(&open(destination, FILE_WRITE_ATTRIBUTES)?, basic)?;
+    Ok(())
+}
+
+fn copy_junction(source: &File, basic: &FILE_BASIC_INFO, destination: &Path) -> Result<()> {
+    let mut reparse = vec![0_u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
+    let length = control(source, FSCTL_GET_REPARSE_POINT, &(), reparse.as_mut_slice())?;
+    fs::create_dir(destination)?;
+    let junction = open(destination, GENERIC_WRITE)?;
+    control(
+        &junction,
+        FSCTL_SET_REPARSE_POINT,
+        &reparse[..length],
+        &mut (),
+    )?;
+    apply_basic(&junction, basic)?;
+    Ok(())
+}
+
+const SETTABLE_ATTRIBUTES: u32 = FILE_ATTRIBUTE_READONLY
+    | FILE_ATTRIBUTE_HIDDEN
+    | FILE_ATTRIBUTE_SYSTEM
+    | FILE_ATTRIBUTE_ARCHIVE
+    | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+    | FILE_ATTRIBUTE_TEMPORARY;
+
+// Runs last for each entry, so the read-only attribute lands after every write.
+fn apply_basic(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
+    set_basic(
+        file,
+        &FILE_BASIC_INFO {
+            CreationTime: source.CreationTime,
+            LastAccessTime: source.LastAccessTime,
+            LastWriteTime: source.LastWriteTime,
+            ChangeTime: 0,
+            FileAttributes: settable(source.FileAttributes),
+        },
+    )
+}
+
+// Zero attributes would leave the current ones unchanged, so clearing them all takes
+// FILE_ATTRIBUTE_NORMAL.
+fn settable(attributes: u32) -> u32 {
+    match attributes & SETTABLE_ATTRIBUTES {
+        0 => FILE_ATTRIBUTE_NORMAL,
+        attributes => attributes,
+    }
+}
+
+fn set_basic(file: &File, basic: &FILE_BASIC_INFO) -> io::Result<()> {
+    // SAFETY: `basic` is a live FILE_BASIC_INFO, the layout FileBasicInfo expects.
+    let succeeded = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (basic as *const FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -374,6 +605,10 @@ impl Information for FILE_ID_INFO {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileIdInfo;
 }
 
+impl Information for FILE_ATTRIBUTE_TAG_INFO {
+    const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileAttributeTagInfo;
+}
+
 fn information<T: Information>(file: &File) -> io::Result<T> {
     let mut value = T::default();
     // SAFETY: `T::CLASS` names the information class whose reply has `T`'s layout, and `value`
@@ -472,14 +707,45 @@ mod tests {
     }
 
     #[test]
-    fn entry_kind_follows_file_attributes() {
-        assert_eq!(EntryKind::classify(0x20), EntryKind::File);
-        assert_eq!(EntryKind::classify(0x21), EntryKind::File);
-        assert_eq!(EntryKind::classify(0x10), EntryKind::Directory);
-        assert_eq!(EntryKind::classify(0x4010), EntryKind::Directory);
-        assert_eq!(EntryKind::classify(0x4020), EntryKind::Unsupported);
-        assert_eq!(EntryKind::classify(0x420), EntryKind::Unsupported);
-        assert_eq!(EntryKind::classify(0x410), EntryKind::Unsupported);
+    fn entry_kind_follows_attributes_and_reparse_tags() {
+        assert_eq!(EntryKind::classify(0x20, 0), EntryKind::File);
+        assert_eq!(EntryKind::classify(0x21, 0), EntryKind::File);
+        assert_eq!(EntryKind::classify(0x10, 0), EntryKind::Directory);
+        assert_eq!(EntryKind::classify(0x4010, 0), EntryKind::Directory);
+        assert_eq!(EntryKind::classify(0x4020, 0), EntryKind::Unsupported);
+        assert_eq!(
+            EntryKind::classify(0x420, 0xa000_000c),
+            EntryKind::Symlink { directory: false }
+        );
+        assert_eq!(
+            EntryKind::classify(0x410, 0xa000_000c),
+            EntryKind::Symlink { directory: true }
+        );
+        assert_eq!(EntryKind::classify(0x410, 0xa000_0003), EntryKind::Junction);
+        assert_eq!(
+            EntryKind::classify(0x420, 0xa000_0003),
+            EntryKind::Unsupported
+        );
+        assert_eq!(
+            EntryKind::classify(0x420, 0x9000_301a),
+            EntryKind::Unsupported
+        );
+        assert_eq!(
+            EntryKind::classify(0x420, 0x8000_001b),
+            EntryKind::Unsupported
+        );
+        assert_eq!(
+            EntryKind::classify(0x420, 0x8000_0013),
+            EntryKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn settable_attributes_never_ask_to_keep_the_current_ones() {
+        assert_eq!(settable(0x8221), 0x21);
+        assert_eq!(settable(0x2006), 0x2006);
+        assert_eq!(settable(0x200), 0x80);
+        assert_eq!(settable(0), 0x80);
     }
 
     #[test]

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 dirs.workspace = true
+dunce.workspace = true
 libc.workspace = true
 rand.workspace = true
 rusqlite.workspace = true

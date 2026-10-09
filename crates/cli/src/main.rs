@@ -185,7 +185,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Init { at, here } => {
-            let requested = std::fs::canonicalize(at.unwrap_or(std::env::current_dir()?))?;
+            let requested = dunce::canonicalize(at.unwrap_or(std::env::current_dir()?))?;
             let (at, existing, missing_marker) = init_target(&manager, &requested, here)?;
             let initialized_from_inside = std::env::current_dir()?.starts_with(&at);
             let mut converting = false;
@@ -265,7 +265,7 @@ fn run() -> Result<()> {
             no_hooks,
         } => {
             let at = manager.workspace(at.unwrap_or(std::env::current_dir()?))?;
-            let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
+            let cwd = dunce::canonicalize(std::env::current_dir()?)?;
             if children {
                 let result = manager.remove_all_with_options(
                     &at,

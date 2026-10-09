@@ -237,7 +237,7 @@ impl Manager {
             return Err(Error::OverlappingWorkspace(destination_parent));
         }
         fs::create_dir_all(&destination_parent)?;
-        let destination_parent = fs::canonicalize(destination_parent)?;
+        let destination_parent = existing_directory(&destination_parent)?;
         let name = match input.name {
             Some(name) => RiftName::new(name)?,
             None => name::generated()
@@ -665,7 +665,9 @@ fn default_database_path() -> Result<PathBuf> {
 }
 
 fn existing_directory(path: &Path) -> Result<PathBuf> {
-    let path = fs::canonicalize(path)?;
+    // `std::fs::canonicalize` returns `\\?\` paths on Windows. Those break Git,
+    // shells, and path comparisons, so store the legacy form when it is unambiguous.
+    let path = dunce::canonicalize(path)?;
     if !path.is_dir() {
         return Err(Error::Path(format!("not a directory: {}", path.display())));
     }

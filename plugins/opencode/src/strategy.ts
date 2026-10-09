@@ -1,4 +1,6 @@
 import { Worktree } from "@opencode/plugin"
+import { existsSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import path from "node:path"
 import { RpcError, rpc } from "./command.js"
 
@@ -14,9 +16,17 @@ export interface Warning {
   message: string
 }
 
+export interface ExecutableLookup {
+  platform: string
+  arch: string
+  findOnPath(fileName: string): string | undefined
+  exists(filePath: string): boolean
+}
+
 interface Runtime {
   warning?: (input: Warning) => void
   rpc?: typeof rpc
+  lookup?: ExecutableLookup
 }
 
 const hints: Partial<Record<string, string>> = {
@@ -43,11 +53,43 @@ function parseOptions(value: Record<string, unknown>): Options {
   return { executable, copyAll, hooks, database }
 }
 
+export function resolveExecutable(configured: string, lookup: ExecutableLookup): string {
+  if (lookup.platform !== "win32" || configured.includes("/") || configured.includes("\\")) return configured
+  const base = configured.toLowerCase().endsWith(".exe") ? configured.slice(0, -4) : configured
+  const exe = lookup.findOnPath(`${base}.exe`)
+  if (exe) return exe
+  const cmd = lookup.findOnPath(`${base}.cmd`)
+  if (!cmd) return configured
+  // npm's .cmd shim cannot be spawned without a shell.
+  const shimDir = path.win32.dirname(cmd)
+  const bundled = (root: string) =>
+    path.win32.resolve(shimDir, root, "rift-snapshot", "prebuilds", `windows-${lookup.arch}`, "rift.exe")
+  const global = bundled("node_modules")
+  const local = bundled("..")
+  if (lookup.exists(global)) return global
+  return lookup.exists(local) ? local : configured
+}
+
+function hostLookup(): ExecutableLookup {
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    findOnPath(fileName) {
+      const finder = process.platform === "win32" ? "where.exe" : "which"
+      const result = spawnSync(finder, [fileName], { encoding: "utf8" })
+      if (result.status !== 0) return undefined
+      return result.stdout.split(/\r?\n/).find((line) => line.trim())?.trim()
+    },
+    exists: existsSync,
+  }
+}
+
 export function makeStrategy(value: Record<string, unknown> = {}, runtime: Runtime = {}) {
   const options = parseOptions(value)
+  const executable = resolveExecutable(options.executable, runtime.lookup ?? hostLookup())
   const call = runtime.rpc ?? rpc
   const request = (command: object, signal: AbortSignal) =>
-    call(options.executable, { database: options.database, ...command }, signal)
+    call(executable, { database: options.database, ...command }, signal)
   const failure = (error: unknown) => {
     const message =
       (error instanceof RpcError && hints[error.code]) || (error instanceof Error ? error.message : String(error))

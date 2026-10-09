@@ -16,7 +16,7 @@ fn source(temp: &TempDir) -> PathBuf {
     let source = temp.path().join("app");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("file.txt"), "hello").unwrap();
-    fs::canonicalize(source).unwrap()
+    dunce::canonicalize(source).unwrap()
 }
 
 fn marker_id(path: &Path) -> RiftId {
@@ -31,6 +31,14 @@ fn create_options(copy_mode: CopyMode, hook_mode: HookMode) -> CreateOptions {
     CreateOptions::default()
         .copy_mode(copy_mode)
         .hook_mode(hook_mode)
+}
+
+fn hook_log_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .collect()
 }
 
 fn child_path(source: &Path, name: &str) -> PathBuf {
@@ -110,7 +118,7 @@ fn create_supports_custom_storage_and_rejects_invalid_destinations() {
                 .with_storage(Some(custom.clone())),
         )
         .unwrap();
-    assert_eq!(child, fs::canonicalize(&custom).unwrap().join("custom"));
+    assert_eq!(child, dunce::canonicalize(&custom).unwrap().join("custom"));
     assert!(matches!(
         manager.create(
             Create::new(source.clone())
@@ -292,14 +300,8 @@ run = "echo post >> lifecycle.log"
         .create(create_input(source.clone(), "lifecycle"))
         .unwrap();
 
-    assert_eq!(
-        fs::read_to_string(source.join("lifecycle.log")).unwrap(),
-        "pre\n"
-    );
-    assert_eq!(
-        fs::read_to_string(child.join("lifecycle.log")).unwrap(),
-        "pre\npost\n"
-    );
+    assert_eq!(hook_log_lines(&source.join("lifecycle.log")), ["pre"]);
+    assert_eq!(hook_log_lines(&child.join("lifecycle.log")), ["pre", "post"]);
 }
 
 #[test]
@@ -506,10 +508,7 @@ run = "echo post >> lifecycle.log"
     manager.remove(&child).unwrap();
 
     assert!(!child.exists());
-    assert_eq!(
-        fs::read_to_string(trash.join("lifecycle.log")).unwrap(),
-        "pre\npost\n"
-    );
+    assert_eq!(hook_log_lines(&trash.join("lifecycle.log")), ["pre", "post"]);
 }
 
 #[test]
@@ -1268,6 +1267,92 @@ fn unavailable_cow_does_not_create_a_child() {
     ));
     assert!(source.join(".rift").exists());
     assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_registry_paths_round_trip_without_verbatim_prefix() {
+    let temp = TempDir::new().unwrap();
+    let raw = temp.path().join("app");
+    fs::create_dir(&raw).unwrap();
+    fs::write(raw.join("file.txt"), "hello").unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&raw).unwrap();
+
+    let workspace = manager.workspace(&raw).unwrap();
+    assert_eq!(workspace, dunce::canonicalize(&raw).unwrap());
+    assert_no_verbatim_prefix(&workspace);
+    assert!(manager.list(&workspace).unwrap().is_empty());
+    assert!(manager.ancestors(&workspace).unwrap().is_empty());
+
+    let child = manager
+        .create(create_input(workspace.clone(), "child"))
+        .unwrap();
+    assert_eq!(manager.list(&raw).unwrap(), vec![child.clone()]);
+    assert_eq!(manager.ancestors(&child).unwrap(), vec![workspace]);
+    assert_eq!(manager.workspace(&child).unwrap(), child);
+    assert_no_verbatim_prefix(&child);
+}
+
+#[cfg(windows)]
+#[test]
+fn remove_reports_in_use_while_a_file_is_open() {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 1;
+
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+    let child = manager
+        .create(create_input(source.clone(), "busy"))
+        .unwrap();
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(child.join("file.txt"))
+        .unwrap();
+
+    let error = manager.remove(&child).unwrap_err();
+
+    assert!(matches!(error, Error::InUse(ref path) if path == &child));
+    assert!(error.to_string().contains("close it and retry"));
+    assert!(child.exists());
+    assert_eq!(manager.list(&source).unwrap(), vec![child.clone()]);
+    assert_eq!(manager.workspace(&child).unwrap(), child);
+
+    drop(held);
+    manager.remove(&child).unwrap();
+    assert!(!child.exists());
+    assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_hooks_keep_quotes_in_the_command() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::write(
+        source.join(".rift.toml"),
+        "version = 1\n[[hooks.postcreate]]\nrun = 'echo \"quoted\">quote.log'\n",
+    )
+    .unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create(create_input(source, "quoted-hook"))
+        .unwrap();
+
+    assert_eq!(hook_log_lines(&child.join("quote.log")), ["\"quoted\""]);
+}
+
+#[cfg(windows)]
+fn assert_no_verbatim_prefix(path: &Path) {
+    let text = path.to_string_lossy();
+    assert!(!text.starts_with(r"\\?\"), "{text}");
 }
 
 #[cfg(unix)]

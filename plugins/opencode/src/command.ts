@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+import { homedir } from "node:os"
 
 interface Failure {
   code: string
@@ -29,6 +30,8 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
   return new Promise((resolve, reject) => {
     const grouped = process.platform !== "win32"
     const child = spawn(executable, ["rpc"], {
+      // A neutral cwd so this process does not pin a workspace and block its removal.
+      cwd: homedir(),
       detached: grouped,
       stdio: ["pipe", "pipe", "pipe"],
     })
@@ -46,7 +49,8 @@ export function rpc(executable: string, request: object, signal: AbortSignal): P
       if (!child.pid) return
       try {
         if (grouped) process.kill(-child.pid, "SIGTERM")
-        else child.kill()
+        // child.kill() leaves hook grandchildren holding the workspace.
+        else spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true })
       } catch {}
     }
     const abort = () => {

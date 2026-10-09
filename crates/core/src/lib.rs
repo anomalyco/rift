@@ -11,14 +11,17 @@ mod strategy;
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_filesystem_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod test_support;
+#[cfg(all(test, windows))]
+mod windows_filesystem_tests;
 
 use id::RiftId;
 use name::RiftName;
 use registry::{MovedRecord, PathRecord, Record, Registry, SubtreeScope};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use strategy::{Strategy, StrategyInit};
 use thiserror::Error;
 
@@ -67,6 +70,8 @@ pub enum Error {
     MissingRift(PathBuf),
     #[error("workspace path overlaps another managed workspace: {0}")]
     OverlappingWorkspace(PathBuf),
+    #[error("another program is using the workspace {0}; close it and retry")]
+    InUse(PathBuf),
     #[error("invalid rift config at {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
     #[error("{hook} hook failed at {path}: `{command}` {message}")]
@@ -237,7 +242,7 @@ impl Manager {
             return Err(Error::OverlappingWorkspace(destination_parent));
         }
         fs::create_dir_all(&destination_parent)?;
-        let destination_parent = fs::canonicalize(destination_parent)?;
+        let destination_parent = existing_directory(&destination_parent)?;
         let name = match input.name {
             Some(name) => RiftName::new(name)?,
             None => name::generated()
@@ -522,11 +527,11 @@ impl Manager {
                 ))
             })?;
             fs::create_dir_all(trash_parent)?;
-            if let Err(error) = fs::rename(&target.original_path, &target.trash_path) {
+            if let Err(error) = rename_into_trash(&target.original_path, &target.trash_path) {
                 for record in moved.iter().rev() {
                     let _ = fs::rename(&record.trash_path, &record.original_path);
                 }
-                return Err(error.into());
+                return Err(error);
             }
             moved.push(target);
         }
@@ -658,6 +663,46 @@ impl Manager {
     }
 }
 
+const TRASH_RENAME_BACKOFF: &[Duration] = &[
+    Duration::from_millis(10),
+    Duration::from_millis(20),
+    Duration::from_millis(40),
+    Duration::from_millis(80),
+    Duration::from_millis(160),
+    Duration::from_millis(320),
+    Duration::from_millis(370),
+];
+
+fn rename_into_trash(from: &Path, to: &Path) -> Result<()> {
+    let mut backoff = TRASH_RENAME_BACKOFF.iter();
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_in_use(&error) => match backoff.next() {
+                Some(delay) => std::thread::sleep(*delay),
+                None => return Err(Error::InUse(from.to_path_buf())),
+            },
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn is_in_use(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+        matches!(
+            error.raw_os_error().map(|code| code as u32),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 fn default_database_path() -> Result<PathBuf> {
     let base = dirs::data_local_dir()
         .ok_or_else(|| Error::Path("user data directory is unavailable".into()))?;
@@ -665,7 +710,7 @@ fn default_database_path() -> Result<PathBuf> {
 }
 
 fn existing_directory(path: &Path) -> Result<PathBuf> {
-    let path = fs::canonicalize(path)?;
+    let path = dunce::canonicalize(path)?;
     if !path.is_dir() {
         return Err(Error::Path(format!("not a directory: {}", path.display())));
     }

@@ -34,6 +34,8 @@ enum Shell {
     Bash,
     Zsh,
     Nushell,
+    #[value(alias = "powershell")]
+    Pwsh,
 }
 
 impl Shell {
@@ -75,6 +77,40 @@ impl Shell {
       ^{executable} ...$rest
     }}
   }}
+}}"#,
+                )
+            }
+            Shell::Pwsh => {
+                let executable = powershell_quote(executable);
+                format!(
+                    r#"function global:rift {{
+    $exe = {executable}
+    $command = $null
+    for ($i = 0; $i -lt $args.Count; $i++) {{
+        $arg = [string]$args[$i]
+        if ($arg -eq '--database') {{ $i++; continue }}
+        if ($arg -like '-*') {{ continue }}
+        $command = $arg
+        break
+    }}
+    if ($command -notin 'init','create','remove') {{
+        & $exe @args
+        return
+    }}
+    $encoding = [Console]::OutputEncoding
+    $code = 0
+    $cwd = $null
+    try {{
+        [Console]::OutputEncoding = [System.Text.Utf8Encoding]::new()
+        $cwd = & $exe --shell-cwd @args | Select-Object -Last 1
+        $code = $LASTEXITCODE
+    }} finally {{
+        [Console]::OutputEncoding = $encoding
+    }}
+    if ($cwd) {{
+        Set-Location -LiteralPath $cwd -ErrorAction Stop
+    }}
+    $global:LASTEXITCODE = $code
 }}"#,
                 )
             }
@@ -185,7 +221,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Init { at, here } => {
-            let requested = std::fs::canonicalize(at.unwrap_or(std::env::current_dir()?))?;
+            let requested = dunce::canonicalize(at.unwrap_or(std::env::current_dir()?))?;
             let (at, existing, missing_marker) = init_target(&manager, &requested, here)?;
             let initialized_from_inside = std::env::current_dir()?.starts_with(&at);
             let mut converting = false;
@@ -265,8 +301,9 @@ fn run() -> Result<()> {
             no_hooks,
         } => {
             let at = manager.workspace(at.unwrap_or(std::env::current_dir()?))?;
-            let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
+            let cwd = dunce::canonicalize(std::env::current_dir()?)?;
             if children {
+                leave_trashed_directory(&manager, &at, &cwd, true, &[])?;
                 let result = manager.remove_all_with_options(
                     &at,
                     RemoveOptions::default().hook_mode(if no_hooks {
@@ -294,6 +331,7 @@ fn run() -> Result<()> {
                 let ancestors = manager.ancestors(&at)?;
                 let unregistering_root = ancestors.is_empty();
                 require_force_for_root(unregistering_root, force)?;
+                leave_trashed_directory(&manager, &at, &cwd, false, &ancestors)?;
                 let destination = if cli.shell_cwd && cwd.starts_with(&at) {
                     if unregistering_root {
                         Some(at.clone())
@@ -374,6 +412,41 @@ fn git_root(path: &std::path::Path) -> PathBuf {
         .to_path_buf()
 }
 
+fn leave_trashed_directory(
+    manager: &Manager,
+    at: &std::path::Path,
+    cwd: &std::path::Path,
+    children: bool,
+    ancestors: &[PathBuf],
+) -> Result<()> {
+    let descendants = manager.descendants(at)?;
+    let Some(stay) = directory_outside_trash(cwd, at, children, ancestors, &descendants) else {
+        return Ok(());
+    };
+    std::env::set_current_dir(stay)?;
+    Ok(())
+}
+
+fn directory_outside_trash(
+    cwd: &std::path::Path,
+    at: &std::path::Path,
+    children: bool,
+    ancestors: &[PathBuf],
+    descendants: &[PathBuf],
+) -> Option<PathBuf> {
+    let preserving = children || ancestors.is_empty();
+    let inside_at = !preserving && cwd.starts_with(at);
+    let inside_descendant = descendants.iter().any(|path| cwd.starts_with(path));
+    if !inside_at && !inside_descendant {
+        return None;
+    }
+    if preserving {
+        Some(at.to_path_buf())
+    } else {
+        ancestors.first().cloned()
+    }
+}
+
 fn require_force_for_root(unregistering_root: bool, force: bool) -> Result<()> {
     if unregistering_root && !force {
         return Err(CliError::ForceRequired);
@@ -388,6 +461,10 @@ fn print_shell_init(shell: Shell) {
 
 fn posix_shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn nushell_shell_quote(value: &str) -> String {
@@ -429,6 +506,88 @@ mod tests {
 
         assert_eq!(init_target(&manager, &nested, false).unwrap().0, root);
         assert_eq!(init_target(&manager, &nested, true).unwrap().0, nested);
+    }
+
+    #[test]
+    fn remove_stands_in_the_parent_before_trashing_a_child() {
+        let parent = PathBuf::from("work").join("app");
+        let child = parent.join(".rifts").join("app").join("child");
+
+        assert_eq!(
+            directory_outside_trash(
+                &child.join("src"),
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                &[],
+            ),
+            Some(parent.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&parent, &child, false, std::slice::from_ref(&parent), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn remove_stands_in_the_parent_before_trashing_a_sibling_descendant() {
+        let parent = PathBuf::from("work").join("app");
+        let child = PathBuf::from("work")
+            .join(".rifts")
+            .join("app")
+            .join("child");
+        let grandchild = PathBuf::from("work")
+            .join(".rifts")
+            .join("app")
+            .join(".rifts")
+            .join("child")
+            .join("grandchild");
+
+        assert_eq!(
+            directory_outside_trash(
+                &grandchild.join("src"),
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                std::slice::from_ref(&grandchild),
+            ),
+            Some(parent.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(
+                &parent,
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                std::slice::from_ref(&grandchild),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn remove_stands_in_the_preserved_workspace_before_trashing_descendants() {
+        let root = PathBuf::from("work").join("app");
+        let child = PathBuf::from("work").join(".rifts").join("app").join("child");
+
+        assert_eq!(
+            directory_outside_trash(
+                &child.join("src"),
+                &root,
+                true,
+                &[],
+                std::slice::from_ref(&child),
+            ),
+            Some(root.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&child, &root, false, &[], std::slice::from_ref(&child)),
+            Some(root.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(&root, &root, false, &[], &[child]),
+            None
+        );
     }
 
     #[test]
@@ -517,6 +676,60 @@ mod tests {
 }"#;
 
         assert_eq!(Shell::Nushell.init_script("/tmp/rift"), wrapper);
+    }
+
+    #[test]
+    fn shell_init_accepts_pwsh_and_powershell() {
+        for name in ["pwsh", "powershell"] {
+            let cli = Cli::try_parse_from(["rift", "shell-init", name]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::ShellInit { shell: Shell::Pwsh }
+            ));
+        }
+    }
+
+    #[test]
+    fn shell_init_renders_powershell_wrapper() {
+        let wrapper = r#"function global:rift {
+    $exe = 'C:\Program Files\rift.exe'
+    $command = $null
+    for ($i = 0; $i -lt $args.Count; $i++) {
+        $arg = [string]$args[$i]
+        if ($arg -eq '--database') { $i++; continue }
+        if ($arg -like '-*') { continue }
+        $command = $arg
+        break
+    }
+    if ($command -notin 'init','create','remove') {
+        & $exe @args
+        return
+    }
+    $encoding = [Console]::OutputEncoding
+    $code = 0
+    $cwd = $null
+    try {
+        [Console]::OutputEncoding = [System.Text.Utf8Encoding]::new()
+        $cwd = & $exe --shell-cwd @args | Select-Object -Last 1
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $encoding
+    }
+    if ($cwd) {
+        Set-Location -LiteralPath $cwd -ErrorAction Stop
+    }
+    $global:LASTEXITCODE = $code
+}"#;
+
+        assert_eq!(
+            Shell::Pwsh.init_script(r"C:\Program Files\rift.exe"),
+            wrapper
+        );
+        assert!(
+            Shell::Pwsh
+                .init_script(r"C:\it's\rift.exe")
+                .contains("$exe = 'C:\\it''s\\rift.exe'")
+        );
     }
 
     #[test]

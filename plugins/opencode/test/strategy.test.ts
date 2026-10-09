@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { RpcError } from "../src/command.js"
-import { makeStrategy } from "../src/strategy.js"
+import { makeStrategy, resolveExecutable, type ExecutableLookup } from "../src/strategy.js"
 
 function fixture() {
   const calls: object[] = []
@@ -92,7 +92,41 @@ describe("Rift workspace strategy", () => {
     await expect(create("missing_marker")).rejects.toThrow(
       "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
     )
+    await expect(create("cow_unavailable")).rejects.toThrow("cow_unavailable at /project")
+    await expect(create("in_use")).rejects.toThrow("in_use at /project")
     await expect(create("hook_failed")).rejects.toThrow("hook_failed at /project")
+  })
+
+  test("resolves a Windows executable without spawning the npm shim", () => {
+    const local = "C:\\proj\\node_modules\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const global = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const globalBesideShim = "C:\\Users\\me\\AppData\\Roaming\\rift-snapshot\\prebuilds\\windows-x64\\rift.exe"
+    const lookup = (found: Record<string, string | undefined>, present: string[]): ExecutableLookup => ({
+      platform: "win32",
+      arch: "x64",
+      findOnPath: (fileName) => found[fileName],
+      exists: (filePath) => present.includes(filePath),
+    })
+
+    expect(resolveExecutable("rift", lookup({ "rift.exe": "C:\\Tools\\rift.exe" }, []))).toBe("C:\\Tools\\rift.exe")
+    expect(resolveExecutable("rift.exe", lookup({ "rift.exe": "C:\\Tools\\rift.exe" }, []))).toBe(
+      "C:\\Tools\\rift.exe",
+    )
+    expect(
+      resolveExecutable("rift", lookup({ "rift.cmd": "C:\\proj\\node_modules\\.bin\\rift.cmd" }, [local])),
+    ).toBe(local)
+    expect(
+      resolveExecutable("rift", lookup({ "rift.cmd": "C:\\Users\\me\\AppData\\Roaming\\npm\\rift.cmd" }, [global])),
+    ).toBe(global)
+    expect(
+      resolveExecutable(
+        "rift",
+        lookup({ "rift.cmd": "C:\\Users\\me\\AppData\\Roaming\\npm\\rift.cmd" }, [global, globalBesideShim]),
+      ),
+    ).toBe(global)
+    expect(resolveExecutable("rift", lookup({ "rift.cmd": "C:\\proj\\node_modules\\.bin\\rift.cmd" }, []))).toBe("rift")
+    expect(resolveExecutable("C:\\rift\\rift.exe", lookup({}, []))).toBe("C:\\rift\\rift.exe")
+    expect(resolveExecutable("rift", { ...lookup({}, []), platform: "linux" })).toBe("rift")
   })
 
   test("keeps OpenCode inventory consistent after post-hook failures", async () => {

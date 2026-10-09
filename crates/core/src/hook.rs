@@ -67,8 +67,12 @@ fn run_step(
 
 #[cfg(windows)]
 fn shell_command(command: &str) -> Command {
-    let mut shell = Command::new("cmd");
-    shell.args(["/C", command]);
+    use std::os::windows::process::CommandExt;
+
+    let mut shell = Command::new("cmd.exe");
+    // Rust's normal quoting turns inner quotes into \", which cmd does not unescape.
+    // /d skips AutoRun. /s strips one pair of quotes around the command.
+    shell.raw_arg(format!("/d /s /c \"{command}\""));
     shell
 }
 

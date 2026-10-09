@@ -102,6 +102,7 @@ impl From<Error> for Failure {
             Error::NamesExhausted(path) => ("names_exhausted", Some(path.clone())),
             Error::MissingRift(path) => ("missing_rift", Some(path.clone())),
             Error::OverlappingWorkspace(path) => ("inside_source", Some(path.clone())),
+            Error::InUse(path) => ("in_use", Some(path.clone())),
             Error::InvalidConfig { path, .. } => ("invalid_config", Some(path.clone())),
             Error::HookFailed { path, .. } => ("hook_failed", Some(path.clone())),
         };

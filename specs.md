@@ -2,7 +2,7 @@
 
 ## Requirement
 
-`rift` must be cross-platform as far as practical. Core semantics should work across macOS, Linux, and Windows. On Linux, managed workspaces use either btrfs subvolumes for instantaneous writable snapshots or native per-file reflinks for copy-on-write tree cloning.
+`rift` must be cross-platform as far as practical. Core semantics should work across macOS, Linux, and Windows. On Linux, managed workspaces use either btrfs subvolumes for instantaneous writable snapshots or native per-file reflinks for copy-on-write tree cloning. On Windows, managed workspaces live on a ReFS volume and use per-file block cloning.
 
 ## API
 
@@ -16,10 +16,11 @@ init(input: {
 
 `init` prepares and registers an original workspace for Rift.
 
-- On Linux, `at` must be on btrfs or a filesystem with native reflink support; on other supported systems, initialization registers the workspace without filesystem conversion.
+- On Linux, `at` must be on btrfs or a filesystem with native reflink support. On Windows, `at` must be on a ReFS volume where block cloning works. On macOS, initialization registers the workspace without filesystem conversion.
 - If `at` is already a btrfs subvolume, register it without replacing it.
 - If `at` is an ordinary btrfs directory, reflink-import it once into a staged btrfs subvolume and atomically replace the original directory at its existing path.
 - On other Linux filesystems, verify native reflink support and register `at` without replacing it.
+- On Windows, run a block-cloning probe in `at` and register `at` without replacing it. If the probe fails, name the filesystem `at` is on and instruct the user to move the project onto a ReFS volume such as a Dev Drive.
 - The original directory is retained under an internal temporary path only while it is needed for rollback and is removed before a successful `init` returns.
 - The core operation initializes exactly `at` and does not search parent directories.
 - The CLI defaults `at` to the current working directory; by default it selects the nearest existing managed ancestor or nearest Git root, prints the selected path, and then invokes core `init` with that exact path. `--here` opts into selecting exactly the supplied path.
@@ -42,6 +43,7 @@ Default behavior:
 
 - Source is `from`.
 - `name` defaults to a random adjective-noun directory name independent of the rift ULID.
+- On Windows, `name` must not end in a dot or a space, and it must not contain a control character or any of `<>:"|?*`. Ignoring case, the part of `name` before its first dot must not be `CON`, `PRN`, `AUX`, `NUL`, `COM1` through `COM9`, or `LPT1` through `LPT9`.
 - `into` defaults to the managed rift directory.
 - Copy the workspace while excluding known heavyweight regenerable dependency, build, and cache artifacts.
 - Preserve manifests, lockfiles, dirty files, staged files, untracked files, and ignored files that are not part of the built-in excluded artifact set.
@@ -70,9 +72,9 @@ run = "pnpm run cleanup"
 run = "echo removed"
 ```
 
-Hooks run sequentially with inherited stdio and environment plus `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. Precreate runs in the source workspace and postcreate runs in the destination. The first failing command stops later hooks. A precreate failure prevents copying; after a postcreate failure, the created workspace remains registered and on disk.
+Hooks run sequentially with inherited stdio and environment plus `RIFT_SOURCE`, `RIFT_DESTINATION`, `RIFT_ID`, and `RIFT_PARENT_ID`. Each command runs as `sh -c <command>`, or as `cmd.exe /d /s /c "<command>"` on Windows. Precreate runs in the source workspace and postcreate runs in the destination. The first failing command stops later hooks. A precreate failure prevents copying; after a postcreate failure, the created workspace remains registered and on disk.
 
-On btrfs, `from` must already be a subvolume. If it is an ordinary directory, fail and instruct the user to run `rift init` first. On other reflink-capable Linux filesystems, clone the directory tree with native per-file reflinks.
+On btrfs, `from` must already be a subvolume. If it is an ordinary directory, fail and instruct the user to run `rift init` first. On other reflink-capable Linux filesystems, clone the directory tree with native per-file reflinks. On Windows, `from` and the destination directory must be on the same volume. Run the block-cloning probe in the destination directory, then clone the tree file by file.
 
 If `from` is already managed by Rift, create copies that exact directory. Do not resolve back to an earlier workspace. Metadata should record the immediate source rift as its parent.
 
@@ -106,6 +108,7 @@ remove(input: {
 - If `at` identifies a registered source root, preserve its directory, delete its `.rift` marker, move each existing registered descendant into trash, tolerate descendants already absent from disk, and delete its active registry tree.
 - The CLI requires `-f` or `--force` when `remove` would unregister a registered source root; this confirmation is not part of the core or FFI operation.
 - The CLI exposes the descendant-preserving mode as `rift remove --children`; the core and FFI input field remains `all`.
+- If the CLI's working directory is inside a directory that `remove` will move into trash, the CLI first changes its working directory to the parent workspace, or to the preserved workspace when it unregisters a root or runs with `--children`. Windows cannot rename a directory that is a process's working directory. This step is not part of the core or FFI operation.
 - If `at` identifies a created rift, move its full descendant subtree into trash.
 - When `all` is true, preserve `at` and delete every managed descendant. In this mode `at` may be the registered source root.
 - `hooks` defaults to true. Preremove runs in `at` before filesystem or registry changes. Postremove runs after successful removal, from the trash directory when `at` was moved and from `at` when it was preserved. A preremove failure prevents removal; a postremove failure reports an error without rolling back the completed removal.
@@ -113,6 +116,7 @@ remove(input: {
 - Verify each existing directory's `.rift` marker before deleting it.
 - Refuse removal if any descendant path is missing, because the registered active tree no longer matches the filesystem.
 - Move each removed rift from `<storage-parent>/<name>` to `<storage-parent>/.trash/<id>-<name>` so custom `into` storage remains on the same filesystem.
+- On Windows, if a move into trash fails with access denied or a sharing violation, retry it for about one second. If it still fails, fail with `InUse` and the path of the rift that could not be moved.
 - After successful filesystem moves, delete the active tree records and insert trash records for garbage collection.
 
 ### `list`
@@ -146,6 +150,7 @@ gc(): AbsolutePath[]
 - On btrfs, attempt immediate subvolume deletion first.
 - If standard mount permissions deny deletion of a populated subvolume, delete its contents and remove the now-empty subvolume with ordinary directory removal.
 - On reflink-backed Linux filesystems, recursively remove the reflinked directory tree.
+- On Windows, recursively remove the directory tree. If Windows denies the deletion, clear the read-only attribute throughout the tree without descending into reparse points, then remove the tree again.
 - Delete each trash registry record after its filesystem directory is successfully removed.
 - Delete active registry records whose filesystem directories were removed outside Rift only when no existing recorded descendant would be orphaned, and include pruned missing paths in the result.
 
@@ -182,6 +187,7 @@ CREATE TABLE trash (
 - The original registered workspace has `parent_id = NULL`.
 - A created rift has `parent_id` set to the source rift `id`.
 - `path` is its current location, not its identity.
+- On Windows, `path` and every path the API returns omit the `\\?\` prefix unless the path cannot be written without it.
 - Provenance is a rooted tree. Descendants of any rift can be listed through recursive queries over `parent_id`.
 - `remove` moves a whole active subtree into trash, so no surviving active record depends on deleted ancestry.
 
@@ -213,9 +219,11 @@ Copying is implemented behind a `Strategy` interface so platform-specific copy-o
 - The `BtrfsStrategy` performs native per-file reflink imports when `init` converts an existing ordinary workspace into a subvolume and when filtered `create` materializes only included paths. Exact `create` uses writable btrfs snapshots.
 - The `LinuxReflinkStrategy` production strategy on Linux verifies native reflink support during `init` and uses native per-file reflinks during `create` without spawning an external copy command. XFS uses this path, as do other Linux filesystems when their `FICLONE` support succeeds.
 - The `ApfsStrategy` production strategy on macOS uses APFS `clonefile` directory cloning for exact copies and per-entry cloning for filtered copies.
+- The `RefsStrategy` production strategy on Windows runs a block-cloning probe during `init` and before each `create`. The probe uses the same routine as `create` to clone a file that spans several clusters, then compares the clone with its source, checks that a write to the clone leaves the source unchanged, and deletes both files.
+- The `RefsStrategy` clones each file with `FSCTL_DUPLICATE_EXTENTS_TO_FILE`. Before each clone it flushes the source through a writable handle. For a read-only source, it clears the attribute for the flush and then restores it. If it cannot open a writable handle, it compares the clone with its source and fails `create` on any difference.
+- The `RefsStrategy` copies alternate data streams by value, keeps hard links within the tree, recreates symbolic links and junctions with their original targets, and copies times and attributes. It refuses encrypted files and every other reparse point, such as cloud placeholder files, with `UnsupportedEntry`.
 - If no implemented copy-on-write strategy succeeds, `create` fails.
 - Full byte copying is not implemented as a fallback.
-- Future strategies may add Windows copy-on-write support without changing the API.
 
 ## Packaging
 
@@ -232,4 +240,4 @@ The npm launcher package temporarily publishes as `rift-snapshot` and bundles pr
 
 For CLI ergonomics, the primary workspace path for `rift init`, `rift create`, `rift remove`, `rift list`, and `rift ancestors` defaults to the current working directory when it is omitted. Workspace operations locate their root by searching upward for its `.rift` marker. The CLI applies similar selection before calling exact-path core `init`, unless `rift init --here` is explicitly requested.
 
-The CLI may provide opt-in Bash, Zsh, and Nushell integration through `rift shell-init <shell>`. The resulting shell function delegates filesystem and registry operations to the executable, then changes the caller's working directory after `init`, `create`, or removal of the current rift. This shell behavior is not part of the native library or FFI APIs.
+The CLI may provide opt-in Bash, Zsh, Nushell, and PowerShell integration through `rift shell-init <shell>`, where `pwsh` and `powershell` both select PowerShell. The resulting shell function delegates filesystem and registry operations to the executable, then changes the caller's working directory after `init`, `create`, or removal of the current rift. This shell behavior is not part of the native library or FFI APIs.

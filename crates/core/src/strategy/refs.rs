@@ -441,6 +441,35 @@ fn control<I: ?Sized, O: Pod + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::{Builder, TempDir};
+
+    fn current_volume_temp() -> TempDir {
+        Builder::new()
+            .prefix(".rift-core-test-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn refs_integration_environment_is_available() {
+        if std::env::var_os("RIFT_REQUIRE_REFS_TESTS").is_none() {
+            return;
+        }
+        let temp = current_volume_temp();
+        let filesystem = filesystem_name(temp.path()).unwrap();
+        assert_eq!(filesystem, "ReFS");
+        verify_block_cloning(temp.path()).unwrap();
+        assert_eq!(
+            fs::read_dir(temp.path()).unwrap().count(),
+            0,
+            "the probe left files in {}",
+            temp.path().display()
+        );
+        println!(
+            "block cloning probe passed on {filesystem} at {}",
+            temp.path().display()
+        );
+    }
 
     #[test]
     fn entry_kind_follows_file_attributes() {

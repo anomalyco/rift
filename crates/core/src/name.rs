@@ -9,7 +9,7 @@ pub(crate) struct RiftName(String);
 impl RiftName {
     pub(crate) fn new(name: String) -> Result<Self> {
         let single_segment = Path::new(&name).file_name() == Some(OsStr::new(&name));
-        if !single_segment || name.starts_with('.') {
+        if !single_segment || name.starts_with('.') || is_reserved_windows_name(&name) {
             return Err(Error::Path(format!("invalid rift name: {name}")));
         }
         Ok(Self(name))
@@ -18,6 +18,48 @@ impl RiftName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+#[cfg(not(windows))]
+fn is_reserved_windows_name(_name: &str) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn is_reserved_windows_name(name: &str) -> bool {
+    if name.ends_with(['.', ' '])
+        || name
+            .chars()
+            .any(|character| character.is_control() || "<>:\"|?*".contains(character))
+    {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 const ADJECTIVES: &[&str] = &[
@@ -58,6 +100,43 @@ mod tests {
         assert!(RiftName::new("/".into()).is_err());
         assert!(RiftName::new("parent/child".into()).is_err());
         assert!(RiftName::new("child/".into()).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn device_names_are_valid_off_windows() {
+        assert_eq!(RiftName::new("CON".into()).unwrap().as_str(), "CON");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rejects_device_names_trailing_space_and_forbidden_characters() {
+        for name in [
+            "CON",
+            "con",
+            "NUL.txt",
+            "COM1",
+            "com9.dat",
+            "LPT1",
+            "prn",
+            "AUX.log",
+            "file.",
+            "file ",
+            "a<b",
+            "a>b",
+            "a:b",
+            "a\"b",
+            "a|b",
+            "a?b",
+            "a*b",
+            "a\u{0001}b",
+        ] {
+            assert!(RiftName::new(name.into()).is_err(), "{name}");
+        }
+        assert_eq!(RiftName::new("child".into()).unwrap().as_str(), "child");
+        assert!(RiftName::new("COM10".into()).is_ok());
+        assert!(RiftName::new("console".into()).is_ok());
+        assert!(RiftName::new("file.CON".into()).is_ok());
     }
 
     #[test]

@@ -40,9 +40,13 @@ pub(super) struct RefsStrategy;
 
 impl Strategy for RefsStrategy {
     fn copy_directory(&self, from: &Path, to: &Path, mode: CopyMode) -> Result<()> {
-        let destination_parent = same_volume_parent(from, to)?;
-        verify_block_cloning(destination_parent)?;
-        create_destination(to)?;
+        let _profile = profile::Session::begin();
+        let destination_parent =
+            profile::timed(profile::Phase::SameVolume, || same_volume_parent(from, to))?;
+        profile::suppressed(profile::Phase::SupportProbe, || {
+            verify_block_cloning(destination_parent)
+        })?;
+        profile::timed(profile::Phase::CreateRoot, || create_destination(to))?;
         clone_tree(from, to, (mode == CopyMode::Filtered).then_some(CopyFilter))
     }
 
@@ -161,7 +165,9 @@ fn volume(path: &Path) -> io::Result<u64> {
 }
 
 fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> {
-    let root: FILE_BASIC_INFO = information(&open(from, FILE_READ_ATTRIBUTES)?)?;
+    let root: FILE_BASIC_INFO = profile::timed(profile::Phase::ClassifyOpen, || {
+        information(&open(from, FILE_READ_ATTRIBUTES)?)
+    })?;
     let mut hard_links = HashMap::new();
     let mut directories = Vec::new();
     for entry in WalkDir::new(from)
@@ -184,19 +190,30 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
                 .strip_prefix(from)
                 .map_err(|error| Error::Path(error.to_string()))?,
         );
-        let file = open(source, GENERIC_READ)?;
-        let basic: FILE_BASIC_INFO = information(&file)?;
-        match EntryKind::of(&file, basic.FileAttributes)? {
+        let (file, basic, kind) = profile::timed(profile::Phase::ClassifyOpen, || {
+            let file = open(source, GENERIC_READ)?;
+            let basic: FILE_BASIC_INFO = information(&file)?;
+            let kind = EntryKind::of(&file, basic.FileAttributes)?;
+            Ok::<_, io::Error>((file, basic, kind))
+        })?;
+        match kind {
             EntryKind::Directory => {
-                fs::create_dir(&destination)?;
+                profile::timed(profile::Phase::DirectoryCreate, || {
+                    fs::create_dir(&destination)
+                })?;
                 directories.push((basic, destination));
             }
             EntryKind::File => {
-                let source = SourceFile::new(source, file, basic)?;
+                let source = profile::timed(profile::Phase::ClassifyOpen, || {
+                    SourceFile::new(source, file, basic)
+                })?;
                 if source.links > 1 {
-                    let id = FileId::of(&source.file)?;
+                    let id =
+                        profile::timed(profile::Phase::ClassifyOpen, || FileId::of(&source.file))?;
                     if let Some(existing) = hard_links.get(&id) {
-                        fs::hard_link(existing, &destination)?;
+                        profile::timed(profile::Phase::HardLink, || {
+                            fs::hard_link(existing, &destination)
+                        })?;
                     } else {
                         clone_file(&source, &destination)?;
                         hard_links.insert(id, destination);
@@ -206,37 +223,60 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
                 }
             }
             EntryKind::Symlink { directory } => {
-                copy_symlink(source, &basic, &destination, directory)?;
+                profile::timed(profile::Phase::Symlink, || {
+                    copy_symlink(source, &basic, &destination, directory)
+                })?;
             }
-            EntryKind::Junction => copy_junction(&file, &basic, &destination)?,
+            EntryKind::Junction => {
+                profile::timed(profile::Phase::Junction, || {
+                    copy_junction(&file, &basic, &destination)
+                })?;
+            }
             EntryKind::Unsupported => return Err(Error::UnsupportedEntry(source.to_path_buf())),
         }
     }
     for (basic, destination) in directories.into_iter().rev() {
-        apply_basic(&open(&destination, FILE_WRITE_ATTRIBUTES)?, &basic)?;
+        profile::timed(profile::Phase::DirectoryMetadata, || {
+            apply_basic(&open(&destination, FILE_WRITE_ATTRIBUTES)?, &basic)
+        })?;
     }
-    apply_basic(&open(to, FILE_WRITE_ATTRIBUTES)?, &root)?;
+    profile::timed(profile::Phase::DirectoryMetadata, || {
+        apply_basic(&open(to, FILE_WRITE_ATTRIBUTES)?, &root)
+    })?;
     Ok(())
 }
 
 fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
-    let flushed = flush(source.path, source.basic.FileAttributes)?;
-    let target = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(destination)?;
+    profile::add_bytes(source.size);
+    let flushed = profile::timed(profile::Phase::Flush, || {
+        flush(source.path, source.basic.FileAttributes)
+    })?;
+    let target = profile::timed(profile::Phase::CreateFile, || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(destination)
+    })?;
     if source.size > 0 {
         clone_data(source, &target)?;
-        if !flushed && !same_contents(&source.file, &target)? {
+        if !flushed
+            && !profile::timed(profile::Phase::ContentCompare, || {
+                same_contents(&source.file, &target)
+            })?
+        {
             return Err(Error::CowUnavailable(format!(
                 "the clone of {} differs from it, so another program may be writing to it; close that program and try again",
                 source.path.display()
             )));
         }
     }
-    copy_streams(source, destination)?;
-    apply_basic(&target, &source.basic)?;
+    profile::timed(profile::Phase::Streams, || {
+        copy_streams(source, destination)
+    })?;
+    profile::timed(profile::Phase::FileMetadata, || {
+        apply_basic(&target, &source.basic)
+    })?;
     Ok(())
 }
 
@@ -261,19 +301,22 @@ fn flush_writable(path: &Path) -> io::Result<bool> {
         .open(path)
     {
         Ok(file) => file.sync_all().map(|()| true),
-        Err(_) => Ok(false),
+        Err(_) => {
+            profile::note_flush_skipped();
+            Ok(false)
+        }
     }
 }
 
 fn clone_data(source: &SourceFile, target: &File) -> Result<()> {
     // A sparse destination keeps ReFS from allocating clusters for the length set below, and a
     // sparse source can only be cloned into a sparse destination.
-    set_sparse(target, true)
+    profile::timed(profile::Phase::SetSparse, || set_sparse(target, true))
         .map_err(|error| cow_unavailable("prepare the clone of", source.path, error))?;
-    let integrity = integrity(&source.file)
+    let integrity = profile::timed(profile::Phase::IntegrityGet, || integrity(&source.file))
         .map_err(|error| cow_unavailable("read the integrity settings of", source.path, error))?;
     match_integrity(&integrity, target);
-    target.set_len(source.size)?;
+    profile::timed(profile::Phase::SetLen, || target.set_len(source.size))?;
     let cluster_size = u64::from(integrity.ClusterSizeInBytes);
     if !cluster_size.is_power_of_two() || cluster_size > CLONE_CHUNK {
         return Err(Error::CowUnavailable(format!(
@@ -282,11 +325,13 @@ fn clone_data(source: &SourceFile, target: &File) -> Result<()> {
         )));
     }
     for (offset, length) in clone_regions(source.size, cluster_size) {
-        duplicate_extents(&source.file, target, offset, length)
-            .map_err(|error| cow_unavailable("clone", source.path, error))?;
+        profile::timed(profile::Phase::DuplicateExtents, || {
+            duplicate_extents(&source.file, target, offset, length)
+        })
+        .map_err(|error| cow_unavailable("clone", source.path, error))?;
     }
     if source.basic.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE == 0 {
-        set_sparse(target, false)?;
+        profile::timed(profile::Phase::ClearSparse, || set_sparse(target, false))?;
     }
     Ok(())
 }
@@ -530,15 +575,19 @@ fn integrity(file: &File) -> io::Result<FSCTL_GET_INTEGRITY_INFORMATION_BUFFER> 
 // Dev Drives refuse to change integrity settings (reflink-copy#27). A mismatch that survives
 // this fails the clone itself.
 fn match_integrity(source: &FSCTL_GET_INTEGRITY_INFORMATION_BUFFER, target: &File) {
-    let _ = integrity(target).and_then(|current| {
-        if (current.ChecksumAlgorithm, current.Flags) == (source.ChecksumAlgorithm, source.Flags) {
-            return Ok(());
-        }
-        let settings = FSCTL_SET_INTEGRITY_INFORMATION_BUFFER {
-            ChecksumAlgorithm: source.ChecksumAlgorithm,
-            Reserved: 0,
-            Flags: source.Flags,
-        };
+    let current = match profile::timed(profile::Phase::IntegrityGet, || integrity(target)) {
+        Ok(current) => current,
+        Err(_) => return,
+    };
+    if (current.ChecksumAlgorithm, current.Flags) == (source.ChecksumAlgorithm, source.Flags) {
+        return;
+    }
+    let settings = FSCTL_SET_INTEGRITY_INFORMATION_BUFFER {
+        ChecksumAlgorithm: source.ChecksumAlgorithm,
+        Reserved: 0,
+        Flags: source.Flags,
+    };
+    let _ = profile::timed(profile::Phase::IntegritySet, || {
         control(target, FSCTL_SET_INTEGRITY_INFORMATION, &settings, &mut ()).map(drop)
     });
 }
@@ -745,6 +794,247 @@ fn control<I: ?Sized, O: Pod + ?Sized>(
         return Err(io::Error::last_os_error());
     }
     Ok(returned as usize)
+}
+
+// Bench-only. Set `RIFT_PROFILE_CLONE` to accumulate per-phase time for one Windows create.
+// The support probe is one synthetic clone, so its inner phases stay out of the file totals.
+mod profile {
+    use std::env;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::process;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Phase {
+        SameVolume,
+        SupportProbe,
+        CreateRoot,
+        ClassifyOpen,
+        DirectoryCreate,
+        Flush,
+        CreateFile,
+        SetSparse,
+        IntegrityGet,
+        IntegritySet,
+        SetLen,
+        DuplicateExtents,
+        ClearSparse,
+        Streams,
+        FileMetadata,
+        DirectoryMetadata,
+        HardLink,
+        Symlink,
+        Junction,
+        ContentCompare,
+    }
+
+    const PHASES: [Phase; 20] = [
+        Phase::SameVolume,
+        Phase::SupportProbe,
+        Phase::CreateRoot,
+        Phase::ClassifyOpen,
+        Phase::DirectoryCreate,
+        Phase::Flush,
+        Phase::CreateFile,
+        Phase::SetSparse,
+        Phase::IntegrityGet,
+        Phase::IntegritySet,
+        Phase::SetLen,
+        Phase::DuplicateExtents,
+        Phase::ClearSparse,
+        Phase::Streams,
+        Phase::FileMetadata,
+        Phase::DirectoryMetadata,
+        Phase::HardLink,
+        Phase::Symlink,
+        Phase::Junction,
+        Phase::ContentCompare,
+    ];
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static SUPPRESS: AtomicU32 = AtomicU32::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static FLUSH_SKIPPED: AtomicU64 = AtomicU64::new(0);
+    static PHASE_NS: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
+    static PHASE_COUNT: [AtomicU64; PHASES.len()] = [const { AtomicU64::new(0) }; PHASES.len()];
+
+    pub(super) struct Session {
+        started: Instant,
+        output: Option<PathBuf>,
+    }
+
+    impl Session {
+        pub(super) fn begin() -> Option<Self> {
+            let value = env::var_os("RIFT_PROFILE_CLONE")?;
+            if value.is_empty() || value == "0" {
+                return None;
+            }
+            reset();
+            ENABLED.store(true, Ordering::Relaxed);
+            let output = if value == "1" || value.eq_ignore_ascii_case("true") {
+                None
+            } else {
+                Some(PathBuf::from(value))
+            };
+            Some(Self {
+                started: Instant::now(),
+                output,
+            })
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            if !ENABLED.swap(false, Ordering::Relaxed) {
+                return;
+            }
+            report(self.started.elapsed().as_nanos(), self.output.as_deref());
+        }
+    }
+
+    pub(super) fn timed<T>(phase: Phase, f: impl FnOnce() -> T) -> T {
+        if !ENABLED.load(Ordering::Relaxed) || SUPPRESS.load(Ordering::Relaxed) != 0 {
+            return f();
+        }
+        let started = Instant::now();
+        let value = f();
+        record(phase, started.elapsed().as_nanos());
+        value
+    }
+
+    pub(super) fn suppressed<T>(phase: Phase, f: impl FnOnce() -> T) -> T {
+        if !ENABLED.load(Ordering::Relaxed) {
+            return f();
+        }
+        SUPPRESS.fetch_add(1, Ordering::Relaxed);
+        let started = Instant::now();
+        let value = f();
+        record(phase, started.elapsed().as_nanos());
+        SUPPRESS.fetch_sub(1, Ordering::Relaxed);
+        value
+    }
+
+    pub(super) fn add_bytes(bytes: u64) {
+        if ENABLED.load(Ordering::Relaxed) && SUPPRESS.load(Ordering::Relaxed) == 0 {
+            BYTES.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn note_flush_skipped() {
+        if ENABLED.load(Ordering::Relaxed) && SUPPRESS.load(Ordering::Relaxed) == 0 {
+            FLUSH_SKIPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn reset() {
+        ENABLED.store(false, Ordering::Relaxed);
+        SUPPRESS.store(0, Ordering::Relaxed);
+        BYTES.store(0, Ordering::Relaxed);
+        FLUSH_SKIPPED.store(0, Ordering::Relaxed);
+        for slot in &PHASE_NS {
+            slot.store(0, Ordering::Relaxed);
+        }
+        for slot in &PHASE_COUNT {
+            slot.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn record(phase: Phase, nanos: u128) {
+        let index = phase as usize;
+        let nanos = u64::try_from(nanos).unwrap_or(u64::MAX);
+        PHASE_NS[index].fetch_add(nanos, Ordering::Relaxed);
+        PHASE_COUNT[index].fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn report(total_ns: u128, output: Option<&Path>) {
+        let total_ns = u64::try_from(total_ns).unwrap_or(u64::MAX);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or(0);
+        let mut accounted = 0_u64;
+        let mut lines = Vec::with_capacity(PHASES.len() + 2);
+        lines.push(format!(
+            "RIFT_PROFILE pid={} stamp_ms={} copy_directory_ns={} bytes={} flush_skipped={}",
+            process::id(),
+            stamp,
+            total_ns,
+            BYTES.load(Ordering::Relaxed),
+            FLUSH_SKIPPED.load(Ordering::Relaxed),
+        ));
+        for phase in PHASES {
+            let index = phase as usize;
+            let count = PHASE_COUNT[index].load(Ordering::Relaxed);
+            let ns = PHASE_NS[index].load(Ordering::Relaxed);
+            accounted = accounted.saturating_add(ns);
+            let share = if total_ns == 0 {
+                0.0
+            } else {
+                ns as f64 / total_ns as f64 * 100.0
+            };
+            let per_call_us = if count == 0 {
+                0.0
+            } else {
+                ns as f64 / count as f64 / 1_000.0
+            };
+            lines.push(format!(
+                "RIFT_PROFILE phase={} count={} ns={} share_pct={share:.2} per_call_us={per_call_us:.1}",
+                phase.name(),
+                count,
+                ns,
+            ));
+        }
+        let unaccounted = total_ns as i64 - accounted as i64;
+        lines.push(format!(
+            "RIFT_PROFILE accounted_ns={accounted} unaccounted_ns={unaccounted}"
+        ));
+        for line in &lines {
+            eprintln!("{line}");
+        }
+        let Some(path) = output else {
+            return;
+        };
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(mut file) => {
+                for line in &lines {
+                    let _ = writeln!(file, "{line}");
+                }
+            }
+            Err(error) => {
+                eprintln!("RIFT_PROFILE failed to write {}: {error}", path.display());
+            }
+        }
+    }
+
+    impl Phase {
+        fn name(self) -> &'static str {
+            match self {
+                Self::SameVolume => "same_volume",
+                Self::SupportProbe => "support_probe",
+                Self::CreateRoot => "create_root",
+                Self::ClassifyOpen => "classify_open",
+                Self::DirectoryCreate => "directory_create",
+                Self::Flush => "flush",
+                Self::CreateFile => "create_file",
+                Self::SetSparse => "set_sparse",
+                Self::IntegrityGet => "integrity_get",
+                Self::IntegritySet => "integrity_set",
+                Self::SetLen => "set_len",
+                Self::DuplicateExtents => "duplicate_extents",
+                Self::ClearSparse => "clear_sparse",
+                Self::Streams => "streams",
+                Self::FileMetadata => "file_metadata",
+                Self::DirectoryMetadata => "directory_metadata",
+                Self::HardLink => "hard_link",
+                Self::Symlink => "symlink",
+                Self::Junction => "junction",
+                Self::ContentCompare => "content_compare",
+            }
+        }
+    }
 }
 
 #[cfg(test)]

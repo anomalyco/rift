@@ -49,14 +49,17 @@ jobs:
         run: cargo bench --package rift --bench create --no-run --locked
 
       - name: Run the benchmark
+        env:
+          RIFT_PROFILE_CLONE: ${{ runner.temp }}/windows-bench-profile.txt
         run: |
           $bench = Get-ChildItem target\release\deps\create-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           Get-Volume -DriveLetter $env:DEV_DRIVE.TrimEnd(':') | Format-List FileSystem, AllocationUnitSize, Size | Out-String | Write-Output
-          ./scripts/ci/windows-bench.ps1 -Volume $env:DEV_DRIVE -Bench $bench.FullName -Samples 5
+          ./scripts/ci/windows-bench.ps1 -Volume $env:DEV_DRIVE -Bench $bench.FullName -Samples 3 -Repos cargo
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-bench-${{ matrix.runner }}
-          path: ${{ runner.temp }}/windows-bench.csv
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/windows-bench*

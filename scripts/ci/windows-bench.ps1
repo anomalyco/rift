@@ -1,10 +1,13 @@
 param(
     [Parameter(Mandatory = $true)] [string] $Volume,
     [Parameter(Mandatory = $true)] [string] $Bench,
-    [int] $Samples = 5
+    [int] $Samples = 5,
+    [string[]] $Repos = @('cargo', 'TypeScript')
 )
 
 $ErrorActionPreference = 'Stop'
+# The clone profiler writes to stderr. That must not fail the step.
+$PSNativeCommandUseErrorActionPreference = $false
 $letter = $Volume.TrimEnd('\').TrimEnd(':')
 $root = "${letter}:\bench"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -28,6 +31,7 @@ function Time([scriptblock] $Block) {
 }
 
 foreach ($name in $repos.Keys) {
+    if ($Repos -notcontains $name) { continue }
     $source = Join-Path $root $name
     git clone --quiet --depth 1 $repos[$name] $source
     if ($LASTEXITCODE -ne 0) { throw "clone of $name failed" }

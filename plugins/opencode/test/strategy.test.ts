@@ -92,10 +92,8 @@ describe("Rift workspace strategy", () => {
     await expect(create("missing_marker")).rejects.toThrow(
       "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
     )
-    await expect(create("cow_unavailable")).rejects.toThrow(
-      "Copy-on-write cloning is unavailable on this volume. Create a Dev Drive and move the project onto it",
-    )
-    await expect(create("in_use")).rejects.toThrow("Another program is using this workspace. Close it and retry")
+    await expect(create("cow_unavailable")).rejects.toThrow("cow_unavailable at /project")
+    await expect(create("in_use")).rejects.toThrow("in_use at /project")
     await expect(create("hook_failed")).rejects.toThrow("hook_failed at /project")
   })
 

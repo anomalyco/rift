@@ -33,9 +33,6 @@ const hints: Partial<Record<string, string>> = {
   workspace_not_initialized: "Rift source is not initialized; run `rift init` from the project root first",
   initialization_required: "This Rift workspace must be initialized first; run `rift init` from its root folder",
   missing_marker: "This Rift workspace is missing its `.rift` marker; run `rift init` to restore it",
-  cow_unavailable:
-    "Copy-on-write cloning is unavailable on this volume. Create a Dev Drive and move the project onto it",
-  in_use: "Another program is using this workspace. Close it and retry",
 }
 
 function parseOptions(value: Record<string, unknown>): Options {

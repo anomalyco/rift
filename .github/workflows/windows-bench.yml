@@ -1,0 +1,62 @@
+name: Windows benchmark
+
+on:
+  push:
+    branches:
+      - nxl/windows-bench
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Benchmark (${{ matrix.volume }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - volume: Dev Drive
+            runner: windows-2025
+          - volume: ReFS
+            runner: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create a Dev Drive
+        if: matrix.volume == 'Dev Drive'
+        uses: samypr100/setup-dev-drive@v4
+        with:
+          drive-size: 20GB
+          drive-format: ReFS
+          native-dev-drive: true
+          trusted-dev-drive: true
+
+      - name: Create a ReFS volume
+        if: matrix.volume == 'ReFS'
+        run: |
+          ./scripts/ci/windows-refs.ps1 -Volume E -CreatePartition
+          "DEV_DRIVE=E:" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the create benchmark
+        run: cargo bench --package rift --bench create --no-run --locked
+
+      - name: Run the benchmark
+        run: |
+          $bench = Get-ChildItem target\release\deps\create-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Get-Volume -DriveLetter $env:DEV_DRIVE.TrimEnd(':') | Format-List FileSystem, AllocationUnitSize, Size | Out-String | Write-Output
+          ./scripts/ci/windows-bench.ps1 -Volume $env:DEV_DRIVE -Bench $bench.FullName -Samples 5
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bench-${{ matrix.runner }}
+          path: ${{ runner.temp }}/windows-bench.csv

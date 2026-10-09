@@ -419,12 +419,7 @@ fn leave_trashed_directory(
     children: bool,
     ancestors: &[PathBuf],
 ) -> Result<()> {
-    let preserving = children || ancestors.is_empty();
-    let descendants = if preserving {
-        manager.descendants(at)?
-    } else {
-        Vec::new()
-    };
+    let descendants = manager.descendants(at)?;
     let Some(stay) = directory_outside_trash(cwd, at, children, ancestors, &descendants) else {
         return Ok(());
     };
@@ -440,12 +435,9 @@ fn directory_outside_trash(
     descendants: &[PathBuf],
 ) -> Option<PathBuf> {
     let preserving = children || ancestors.is_empty();
-    let moving = if preserving {
-        descendants.iter().any(|path| cwd.starts_with(path))
-    } else {
-        cwd.starts_with(at)
-    };
-    if !moving {
+    let inside_at = !preserving && cwd.starts_with(at);
+    let inside_descendant = descendants.iter().any(|path| cwd.starts_with(path));
+    if !inside_at && !inside_descendant {
         return None;
     }
     if preserving {
@@ -533,6 +525,42 @@ mod tests {
         );
         assert_eq!(
             directory_outside_trash(&parent, &child, false, std::slice::from_ref(&parent), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn remove_stands_in_the_parent_before_trashing_a_sibling_descendant() {
+        let parent = PathBuf::from("work").join("app");
+        let child = PathBuf::from("work")
+            .join(".rifts")
+            .join("app")
+            .join("child");
+        let grandchild = PathBuf::from("work")
+            .join(".rifts")
+            .join("app")
+            .join(".rifts")
+            .join("child")
+            .join("grandchild");
+
+        assert_eq!(
+            directory_outside_trash(
+                &grandchild.join("src"),
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                std::slice::from_ref(&grandchild),
+            ),
+            Some(parent.clone())
+        );
+        assert_eq!(
+            directory_outside_trash(
+                &parent,
+                &child,
+                false,
+                std::slice::from_ref(&parent),
+                std::slice::from_ref(&grandchild),
+            ),
             None
         );
     }

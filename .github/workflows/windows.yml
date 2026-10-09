@@ -51,7 +51,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Create a ReFS volume and copy the checkout onto it
-        run: ./scripts/ci/windows-refs.ps1 -Volume E: -CreatePartition
+        run: ./scripts/ci/windows-refs.ps1 -Volume E -CreatePartition
 
       - name: Run tests on ReFS
         working-directory: ${{ env.RIFT_CHECKOUT }}

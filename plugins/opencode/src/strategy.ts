@@ -60,7 +60,7 @@ export function resolveExecutable(configured: string, lookup: ExecutableLookup):
   if (exe) return exe
   const cmd = lookup.findOnPath(`${base}.cmd`)
   if (!cmd) return configured
-  // npm's .cmd shim cannot be spawned without a shell. The binary is <shim dir>\node_modules\rift-snapshot globally and <shim dir>\..\rift-snapshot locally.
+  // npm's .cmd shim cannot be spawned without a shell.
   const shimDir = path.win32.dirname(cmd)
   const bundled = (root: string) =>
     path.win32.resolve(shimDir, root, "rift-snapshot", "prebuilds", `windows-${lookup.arch}`, "rift.exe")

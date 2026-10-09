@@ -158,11 +158,11 @@ fn same_volume_parent<'a>(from: &Path, to: &'a Path) -> Result<&'a Path> {
 }
 
 fn volume(path: &Path) -> io::Result<u64> {
-    Ok(FileId::of(&open(path, FILE_READ_ATTRIBUTES)?)?.volume)
+    Ok(FileId::of(&open_without_following(path, FILE_READ_ATTRIBUTES)?)?.volume)
 }
 
 fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> {
-    let root: FILE_BASIC_INFO = information(&open(from, FILE_READ_ATTRIBUTES)?)?;
+    let root: FILE_BASIC_INFO = information(&open_without_following(from, FILE_READ_ATTRIBUTES)?)?;
     let mut hard_links = HashMap::new();
     let mut directories = Vec::new();
     for entry in WalkDir::new(from)
@@ -185,7 +185,7 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
                 .strip_prefix(from)
                 .map_err(|error| Error::Path(error.to_string()))?,
         );
-        let file = open(source, GENERIC_READ)?;
+        let file = open_without_following(source, GENERIC_READ)?;
         let basic: FILE_BASIC_INFO = information(&file)?;
         match EntryKind::of(&file, basic.FileAttributes)? {
             EntryKind::Directory => {
@@ -214,10 +214,18 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
         }
     }
     for (basic, destination) in directories.into_iter().rev() {
-        apply_basic(&open(&destination, FILE_WRITE_ATTRIBUTES)?, &basic)?;
+        apply_final_metadata(
+            &open_without_following(&destination, FILE_WRITE_ATTRIBUTES)?,
+            &basic,
+        )?;
     }
-    apply_basic(&open(to, FILE_WRITE_ATTRIBUTES)?, &root)?;
+    apply_final_metadata(&open_without_following(to, FILE_WRITE_ATTRIBUTES)?, &root)?;
     Ok(())
+}
+
+enum Flush {
+    Done,
+    Unavailable,
 }
 
 fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
@@ -229,40 +237,45 @@ fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
         .open(destination)?;
     if source.size > 0 {
         clone_data(source, &target)?;
-        if !flushed && !same_contents(&source.file, &target)? {
-            return Err(Error::CowUnavailable(format!(
-                "the clone of {} differs from it, so another program may be writing to it; close that program and try again",
-                source.path.display()
-            )));
+        match flushed {
+            Flush::Done => {}
+            Flush::Unavailable => {
+                if !same_contents(&source.file, &target)? {
+                    return Err(Error::CowUnavailable(format!(
+                        "the clone of {} differs from it, so another program may be writing to it; close that program and try again",
+                        source.path.display()
+                    )));
+                }
+            }
         }
     }
     copy_streams(source, destination)?;
-    apply_basic(&target, &source.basic)?;
+    apply_final_metadata(&target, &source.basic)?;
     Ok(())
 }
 
 // Block cloning shares what is on disk, so writes still in the cache came back zero-filled in
 // clones (https://github.com/git-lfs/git-lfs/issues/6312, pnpm#7186). Flushing needs a writable
-// handle; when none can be opened, the caller compares the clone with its source instead.
-fn flush(path: &Path, attributes: u32) -> Result<bool> {
+// handle.
+fn flush(path: &Path, attributes: u32) -> Result<Flush> {
     if attributes & FILE_ATTRIBUTE_READONLY == 0 {
         return Ok(flush_writable(path)?);
     }
-    let file = open(path, FILE_WRITE_ATTRIBUTES)?;
+    let file = open_without_following(path, FILE_WRITE_ATTRIBUTES)?;
     set_attributes(&file, attributes & !FILE_ATTRIBUTE_READONLY)?;
     let flushed = flush_writable(path);
     set_attributes(&file, attributes)?;
     Ok(flushed?)
 }
 
-fn flush_writable(path: &Path) -> io::Result<bool> {
+fn flush_writable(path: &Path) -> io::Result<Flush> {
     match OpenOptions::new()
         .write(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
     {
-        Ok(file) => file.sync_all().map(|()| true),
-        Err(_) => Ok(false),
+        Ok(file) => file.sync_all().map(|()| Flush::Done),
+        Err(_) => Ok(Flush::Unavailable),
     }
 }
 
@@ -292,8 +305,7 @@ fn clone_data(source: &SourceFile, target: &File) -> Result<()> {
     Ok(())
 }
 
-// Streams are copied by value. Cloning into an alternate data stream crashed ReFS before a
-// hotfix (microsoft/CopyOnWrite#24).
+// Cloning into an alternate data stream crashed ReFS before a hotfix (microsoft/CopyOnWrite#24).
 fn copy_streams(source: &SourceFile, destination: &Path) -> Result<()> {
     for stream in stream_names(&source.file)? {
         let mut reader = File::open(with_stream(source.path, &stream))?;
@@ -399,7 +411,10 @@ fn copy_symlink(
             error.into()
         }
     })?;
-    apply_basic(&open(destination, FILE_WRITE_ATTRIBUTES)?, basic)?;
+    apply_final_metadata(
+        &open_without_following(destination, FILE_WRITE_ATTRIBUTES)?,
+        basic,
+    )?;
     Ok(())
 }
 
@@ -407,14 +422,14 @@ fn copy_junction(source: &File, basic: &FILE_BASIC_INFO, destination: &Path) -> 
     let mut reparse = vec![0_u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
     let length = control(source, FSCTL_GET_REPARSE_POINT, &(), reparse.as_mut_slice())?;
     fs::create_dir(destination)?;
-    let junction = open(destination, GENERIC_WRITE)?;
+    let junction = open_without_following(destination, GENERIC_WRITE)?;
     control(
         &junction,
         FSCTL_SET_REPARSE_POINT,
         &reparse[..length],
         &mut (),
     )?;
-    apply_basic(&junction, basic)?;
+    apply_final_metadata(&junction, basic)?;
     Ok(())
 }
 
@@ -425,8 +440,7 @@ const SETTABLE_ATTRIBUTES: u32 = FILE_ATTRIBUTE_READONLY
     | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
     | FILE_ATTRIBUTE_TEMPORARY;
 
-// Runs last for each entry, so the read-only attribute lands after every write.
-fn apply_basic(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
+fn apply_final_metadata(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
     set_basic(
         file,
         &FILE_BASIC_INFO {
@@ -440,8 +454,7 @@ fn apply_basic(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
 }
 
 // Volumes without POSIX delete semantics, such as plain ReFS on Windows Server 2022, refuse to
-// delete read-only files like Git objects. Reparse points lose their own read-only attribute
-// but are never descended into.
+// delete read-only files like Git objects.
 fn clear_read_only(root: &Path) -> Result<()> {
     let mut entries = WalkDir::new(root).follow_links(false).into_iter();
     while let Some(entry) = entries.next() {
@@ -452,7 +465,7 @@ fn clear_read_only(root: &Path) -> Result<()> {
         }
         if attributes & FILE_ATTRIBUTE_READONLY != 0 {
             set_attributes(
-                &open(entry.path(), FILE_WRITE_ATTRIBUTES)?,
+                &open_without_following(entry.path(), FILE_WRITE_ATTRIBUTES)?,
                 attributes & !FILE_ATTRIBUTE_READONLY,
             )?;
         }
@@ -582,7 +595,7 @@ fn probe(source: &Path, clone: &Path) -> Result<()> {
         .map(|index| (index % 251) as u8 + 1)
         .collect::<Vec<_>>();
     fs::write(source, &contents)?;
-    let file = open(source, GENERIC_READ)?;
+    let file = open_without_following(source, GENERIC_READ)?;
     let basic = information(&file)?;
     let source_file = SourceFile::new(source, file, basic)?;
     clone_file(&source_file, clone)?;
@@ -613,7 +626,7 @@ fn unsupported_volume(directory: &Path, reason: &str) -> Error {
 }
 
 fn filesystem_name(path: &Path) -> io::Result<String> {
-    let directory = open(path, FILE_READ_ATTRIBUTES)?;
+    let directory = open_without_following(path, FILE_READ_ATTRIBUTES)?;
     let mut name = [0_u16; MAX_PATH as usize + 1];
     // SAFETY: `name` is writable for its full length, and the outputs Rift does not need are
     // null with zero length.
@@ -661,7 +674,7 @@ fn same_contents(mut left: &File, mut right: &File) -> io::Result<bool> {
     }
 }
 
-fn open(path: &Path, access: u32) -> io::Result<File> {
+fn open_without_following(path: &Path, access: u32) -> io::Result<File> {
     OpenOptions::new()
         .access_mode(access)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -669,29 +682,32 @@ fn open(path: &Path, access: u32) -> io::Result<File> {
         .open(path)
 }
 
-trait Information: Default {
+/// # Safety
+///
+/// `CLASS` replies with exactly `Self`'s layout.
+unsafe trait Information: Default {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS;
 }
 
-impl Information for FILE_BASIC_INFO {
+unsafe impl Information for FILE_BASIC_INFO {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileBasicInfo;
 }
 
-impl Information for FILE_STANDARD_INFO {
+unsafe impl Information for FILE_STANDARD_INFO {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileStandardInfo;
 }
 
-impl Information for FILE_ID_INFO {
+unsafe impl Information for FILE_ID_INFO {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileIdInfo;
 }
 
-impl Information for FILE_ATTRIBUTE_TAG_INFO {
+unsafe impl Information for FILE_ATTRIBUTE_TAG_INFO {
     const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileAttributeTagInfo;
 }
 
 fn information<T: Information>(file: &File) -> io::Result<T> {
     let mut value = T::default();
-    // SAFETY: `T::CLASS` names the information class whose reply has `T`'s layout, and `value`
+    // SAFETY: `Information` promises `T::CLASS` replies with exactly `T`'s layout, and `value`
     // is writable for `size_of::<T>()` bytes.
     let succeeded = unsafe {
         GetFileInformationByHandleEx(
@@ -707,14 +723,16 @@ fn information<T: Information>(file: &File) -> io::Result<T> {
     Ok(value)
 }
 
-/// Output buffers that `DeviceIoControl` may fill with any bytes.
-trait Pod {}
+/// # Safety
+///
+/// Any byte pattern the OS writes is a valid value of `Self`.
+unsafe trait Pod {}
 
-impl Pod for () {}
+unsafe impl Pod for () {}
 
-impl Pod for [u8] {}
+unsafe impl Pod for [u8] {}
 
-impl Pod for FSCTL_GET_INTEGRITY_INFORMATION_BUFFER {}
+unsafe impl Pod for FSCTL_GET_INTEGRITY_INFORMATION_BUFFER {}
 
 fn control<I: ?Sized, O: Pod + ?Sized>(
     file: &File,
@@ -725,8 +743,9 @@ fn control<I: ?Sized, O: Pod + ?Sized>(
     let input_size = size_of_val(input);
     let output_size = size_of_val(output);
     let mut returned = 0;
-    // SAFETY: `input` and `output` are live for their full sizes, `O` accepts any bytes, and the
-    // handle was opened without overlapped I/O, so the call finishes before it returns.
+    // SAFETY: `input` and `output` are live for their full sizes, `Pod` promises any byte pattern
+    // the OS writes is a valid `O`, and the handle was opened without overlapped I/O, so the call
+    // finishes before it returns.
     let succeeded = unsafe {
         DeviceIoControl(
             file.as_raw_handle(),

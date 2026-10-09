@@ -49,10 +49,19 @@ fn production_refs_volume_round_trip() {
         .create(Create::new(source.clone()).named("child"))
         .unwrap();
     let elapsed = started.elapsed();
+    let entries = WalkDir::new(&child).into_iter().count();
     assert_no_probe_files(child.parent().unwrap());
 
     assert_same_tree(&source, &child);
     assert!(!child.join("node_modules").exists());
+    assert_ne!(
+        fs::symlink_metadata(child.join("sparse.bin"))
+            .unwrap()
+            .file_attributes()
+            & 0x200,
+        0,
+        "the clone of a sparse file should stay sparse"
+    );
     assert_eq!(
         fs::read_to_string(stream(&child.join("streams.txt"), "rift.test")).unwrap(),
         "alternate stream"
@@ -99,9 +108,8 @@ fn production_refs_volume_round_trip() {
         "leaf"
     );
     println!(
-        "refs round trip: created {} with {} entries in {elapsed:?}",
-        child.display(),
-        WalkDir::new(&child).into_iter().count()
+        "refs round trip: created {} with {entries} entries in {elapsed:?}",
+        child.display()
     );
 }
 
@@ -354,6 +362,17 @@ fn rich_git_workspace(root: &Path, outside: &Path) -> PathBuf {
         "alternate stream",
     )
     .unwrap();
+    let sparse = source.join("sparse.bin");
+    fs::write(&sparse, "").unwrap();
+    run(
+        "fsutil",
+        &["sparse".as_ref(), "setflag".as_ref(), sparse.as_os_str()],
+    );
+    let mut sparse_file = OpenOptions::new().write(true).open(&sparse).unwrap();
+    sparse_file.seek(SeekFrom::Start(2 << 20)).unwrap();
+    sparse_file.write_all(b"data between holes").unwrap();
+    sparse_file.set_len(4 << 20).unwrap();
+    drop(sparse_file);
     fs::write(source.join("ünïcødé-文件.txt"), "unicode").unwrap();
     let long = source
         .join("long")

@@ -22,7 +22,6 @@ use windows_sys::core::GUID;
 
 const LARGE_FILE_SIZE: usize = (1 << 20) + 123;
 
-// create rewrites the marker and detaches HEAD after copying.
 const REWRITTEN_BY_CREATE: [&str; 2] = [".rift", ".git/HEAD"];
 
 #[test]
@@ -39,7 +38,7 @@ fn production_refs_volume_round_trip() {
 
     assert_eq!(manager.init(&source).unwrap(), InitOutcome::Registered);
     assert_no_probe_files(&source);
-    refresh_git_index(&source);
+    git(&source, &["update-index", "-q", "--refresh"]);
     assert_eq!(
         git_output(&source, &["diff-files", "--name-only"]),
         "dirty.txt\n"
@@ -565,16 +564,6 @@ fn stream(path: &Path, name: &str) -> PathBuf {
     path.push(":");
     path.push(name);
     path.into()
-}
-
-// `update-index --refresh` exits non-zero while dirty.txt has unstaged changes.
-fn refresh_git_index(path: &Path) {
-    Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["update-index", "-q", "--refresh"])
-        .status()
-        .unwrap();
 }
 
 fn git(path: &Path, args: &[&str]) {

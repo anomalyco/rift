@@ -18,6 +18,7 @@ fn refs_environment_can_create_a_workspace() {
         "RIFT_REQUIRE_REFS_TESTS requires create to succeed on this volume\n{}",
         command_text(&create)
     );
+    println!("windows e2e: create succeeded on {}", source.display());
 }
 
 #[test]
@@ -35,6 +36,10 @@ fn init_and_create_print_paths_without_verbatim_prefix() {
     assert_no_verbatim_prefix(&create.stdout);
     assert_no_verbatim_prefix(&create.stderr);
     assert!(child.join("marker.txt").is_file());
+    println!(
+        "windows e2e: init and create printed {} without a verbatim prefix",
+        child.display()
+    );
 }
 
 #[test]
@@ -51,6 +56,10 @@ fn remove_from_inside_the_workspace_moves_it_to_trash() {
     );
     assert!(!child.exists());
     assert!(trash_contains_marker(child.parent().unwrap()));
+    println!(
+        "windows e2e: remove from inside moved {} to trash",
+        child.display()
+    );
 }
 
 #[test]
@@ -92,6 +101,7 @@ fn powershell_remove_returns_to_the_parent_workspace() {
     assert_no_verbatim_prefix(&location);
     assert!(!child.exists());
     assert!(source.join(".rift").is_file());
+    println!("windows e2e: pwsh remove returned to {}", parent.display());
 }
 
 fn refs_fixture() -> Option<Fixture> {

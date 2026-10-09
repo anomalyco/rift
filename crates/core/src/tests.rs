@@ -33,6 +33,14 @@ fn create_options(copy_mode: CopyMode, hook_mode: HookMode) -> CreateOptions {
         .hook_mode(hook_mode)
 }
 
+fn hook_log_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
 fn child_path(source: &Path, name: &str) -> PathBuf {
     source.parent().unwrap().join(".rifts/app").join(name)
 }
@@ -292,14 +300,8 @@ run = "echo post >> lifecycle.log"
         .create(create_input(source.clone(), "lifecycle"))
         .unwrap();
 
-    assert_eq!(
-        fs::read_to_string(source.join("lifecycle.log")).unwrap(),
-        "pre\n"
-    );
-    assert_eq!(
-        fs::read_to_string(child.join("lifecycle.log")).unwrap(),
-        "pre\npost\n"
-    );
+    assert_eq!(hook_log_lines(&source.join("lifecycle.log")), ["pre"]);
+    assert_eq!(hook_log_lines(&child.join("lifecycle.log")), ["pre", "post"]);
 }
 
 #[test]
@@ -506,10 +508,7 @@ run = "echo post >> lifecycle.log"
     manager.remove(&child).unwrap();
 
     assert!(!child.exists());
-    assert_eq!(
-        fs::read_to_string(trash.join("lifecycle.log")).unwrap(),
-        "pre\npost\n"
-    );
+    assert_eq!(hook_log_lines(&trash.join("lifecycle.log")), ["pre", "post"]);
 }
 
 #[test]
@@ -1328,6 +1327,26 @@ fn remove_reports_in_use_while_a_file_is_open() {
     manager.remove(&child).unwrap();
     assert!(!child.exists());
     assert!(manager.list(&source).unwrap().is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_hooks_keep_quotes_in_the_command() {
+    let temp = TempDir::new().unwrap();
+    let source = source(&temp);
+    fs::write(
+        source.join(".rift.toml"),
+        "version = 1\n[[hooks.postcreate]]\nrun = 'echo \"quoted\">quote.log'\n",
+    )
+    .unwrap();
+    let mut manager = manager(&temp);
+    manager.init(&source).unwrap();
+
+    let child = manager
+        .create(create_input(source, "quoted-hook"))
+        .unwrap();
+
+    assert_eq!(hook_log_lines(&child.join("quote.log")), ["\"quoted\""]);
 }
 
 #[cfg(windows)]

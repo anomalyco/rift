@@ -209,6 +209,7 @@ fn clone_tree(from: &Path, to: &Path, filter: Option<CopyFilter>) -> Result<()> 
 }
 
 fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
+    let flushed = flush(source.path, source.basic.FileAttributes)?;
     let target = OpenOptions::new()
         .read(true)
         .write(true)
@@ -216,10 +217,41 @@ fn clone_file(source: &SourceFile, destination: &Path) -> Result<()> {
         .open(destination)?;
     if source.size > 0 {
         clone_data(source, &target)?;
+        if !flushed && !same_contents(&source.file, &target)? {
+            return Err(Error::CowUnavailable(format!(
+                "the clone of {} differs from it, so another program may be writing to it; close that program and try again",
+                source.path.display()
+            )));
+        }
     }
     copy_streams(source, destination)?;
     apply_basic(&target, &source.basic)?;
     Ok(())
+}
+
+// Block cloning shares what is on disk, so writes still in the cache came back zero-filled in
+// clones (https://github.com/git-lfs/git-lfs/issues/6312, pnpm#7186). Flushing needs a writable
+// handle; when none can be opened, the caller compares the clone with its source instead.
+fn flush(path: &Path, attributes: u32) -> Result<bool> {
+    if attributes & FILE_ATTRIBUTE_READONLY == 0 {
+        return Ok(flush_writable(path)?);
+    }
+    let file = open(path, FILE_WRITE_ATTRIBUTES)?;
+    set_attributes(&file, attributes & !FILE_ATTRIBUTE_READONLY)?;
+    let flushed = flush_writable(path);
+    set_attributes(&file, attributes)?;
+    Ok(flushed?)
+}
+
+fn flush_writable(path: &Path) -> io::Result<bool> {
+    match OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file.sync_all().map(|()| true),
+        Err(_) => Ok(false),
+    }
 }
 
 fn clone_data(source: &SourceFile, target: &File) -> Result<()> {
@@ -385,6 +417,16 @@ fn apply_basic(file: &File, source: &FILE_BASIC_INFO) -> io::Result<()> {
             LastWriteTime: source.LastWriteTime,
             ChangeTime: 0,
             FileAttributes: settable(source.FileAttributes),
+        },
+    )
+}
+
+fn set_attributes(file: &File, attributes: u32) -> io::Result<()> {
+    set_basic(
+        file,
+        &FILE_BASIC_INFO {
+            FileAttributes: settable(attributes),
+            ..FILE_BASIC_INFO::default()
         },
     )
 }

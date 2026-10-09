@@ -13,8 +13,8 @@ use std::time::Instant;
 use tempfile::{Builder, TempDir};
 use walkdir::WalkDir;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileIdInfo,
-    GetFileInformationByHandleEx, REPARSE_GUID_DATA_BUFFER, REPARSE_GUID_DATA_BUFFER_0,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_SHARE_READ,
+    FileIdInfo, GetFileInformationByHandleEx, REPARSE_GUID_DATA_BUFFER, REPARSE_GUID_DATA_BUFFER_0,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
@@ -89,6 +89,80 @@ fn production_refs_volume_round_trip() {
         child.display(),
         WalkDir::new(&child).into_iter().count()
     );
+}
+
+#[test]
+fn production_refs_clones_files_written_moments_before() {
+    if !requires_refs_tests() {
+        return;
+    }
+    let temp = current_volume_temp();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let mut manager = Manager::open(temp.path().join("registry.sqlite")).unwrap();
+    manager.init(&source).unwrap();
+    let files = (1..=64_u64)
+        .map(|seed| {
+            let name = format!("file-{seed:02}.bin");
+            let contents = pseudo_random(4 << 20, seed);
+            fs::write(source.join(&name), &contents).unwrap();
+            (name, contents)
+        })
+        .collect::<Vec<_>>();
+
+    let started = Instant::now();
+    let child = manager
+        .create(Create::new(source.clone()).named("child"))
+        .unwrap();
+    let elapsed = started.elapsed();
+
+    for (name, contents) in &files {
+        let cloned = fs::read(child.join(name)).unwrap();
+        if let Some(offset) = cloned.iter().zip(contents).position(|(a, b)| a != b) {
+            let end = (offset + 16).min(cloned.len());
+            panic!(
+                "{name} differs from offset {offset}; the clone holds {:?} there",
+                &cloned[offset..end]
+            );
+        }
+        assert_eq!(cloned.len(), contents.len(), "{name} has the wrong length");
+    }
+    println!(
+        "write-then-clone: created 64 freshly written 4 MiB files in {elapsed:?}, {:?} per file",
+        elapsed / 64
+    );
+}
+
+#[test]
+fn production_refs_clones_files_held_open_without_write_sharing() {
+    if !requires_refs_tests() {
+        return;
+    }
+    let temp = current_volume_temp();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let held = source.join("held.bin");
+    let contents = pseudo_random(LARGE_FILE_SIZE, 0x4e1d);
+    fs::write(&held, &contents).unwrap();
+    let mut manager = Manager::open(temp.path().join("registry.sqlite")).unwrap();
+    manager.init(&source).unwrap();
+    let holder = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&held)
+        .unwrap();
+
+    let child = manager
+        .create(Create::new(source.clone()).named("child"))
+        .unwrap();
+    drop(holder);
+
+    assert!(
+        fs::read(child.join("held.bin")).unwrap() == contents,
+        "held.bin differs in the clone"
+    );
+    assert_shared_extents(&held, &child.join("held.bin"));
+    println!("refs create cloned a file another handle held without write sharing");
 }
 
 #[test]

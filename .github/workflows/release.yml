@@ -43,11 +43,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             executable: rift
             archive: tar
-          - os: macos-14
+          - os: blacksmith-6vcpu-macos-15
             target: x86_64-apple-darwin
             executable: rift
             archive: tar
-          - os: macos-14
+          - os: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
             executable: rift
             archive: tar

@@ -188,10 +188,13 @@ pub(super) fn copy_metadata_linux(from: &Path, to: &Path, target: MetadataTarget
     if unsafe { libc::lchown(destination.as_ptr(), metadata.uid(), metadata.gid()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    // Extended attributes must be copied before the mode is applied. `setxattr`
+    // requires write access, so a read-only entry would otherwise lock its own
+    // copy.
+    copy_xattrs_linux(from, to)?;
     if matches!(target, MetadataTarget::FileOrDirectory) {
         fs::set_permissions(to, fs::Permissions::from_mode(metadata.mode()))?;
     }
-    copy_xattrs_linux(from, to)?;
     let times = [
         libc::timespec {
             tv_sec: metadata.atime(),
@@ -428,6 +431,94 @@ mod tests {
             Err(Error::CowUnavailable(_))
         ));
         assert!(!destination.exists());
+    }
+
+    /// Regression: Git object files are `0444`, and `setxattr` needs write
+    /// access. Applying the mode before the extended attributes made the copy
+    /// fail with `EACCES` for read-only files and directories that carry them.
+    #[test]
+    fn native_copy_preserves_xattrs_on_read_only_entries() {
+        let Some(temp) = reflink_temp() else {
+            return;
+        };
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let locked = source.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let object = locked.join("8a474f");
+        fs::write(&object, "object").unwrap();
+        set_xattr(&object, "user.rift_test", b"file");
+        fs::set_permissions(&object, fs::Permissions::from_mode(0o444)).unwrap();
+        set_xattr(&locked, "user.rift_test", b"dir");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = LinuxStrategy.copy_directory(&source, &destination, CopyMode::Filtered);
+
+        // Restore write access so the temporary directory can be cleaned up.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+
+        let copied = destination.join("locked");
+        assert_eq!(fs::read_to_string(copied.join("8a474f")).unwrap(), "object");
+        assert_eq!(
+            fs::metadata(copied.join("8a474f"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o444
+        );
+        assert_eq!(get_xattr(&copied.join("8a474f"), "user.rift_test"), b"file");
+        assert_eq!(
+            fs::metadata(&copied).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        assert_eq!(get_xattr(&copied, "user.rift_test"), b"dir");
+        fs::set_permissions(&copied, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn set_xattr(path: &Path, name: &str, value: &[u8]) {
+        let path = c_path(path).unwrap();
+        let name = std::ffi::CString::new(name).unwrap();
+        assert_eq!(
+            // SAFETY: test inputs are valid C strings and `value` is a live
+            // byte slice whose contents are copied by the kernel.
+            unsafe {
+                libc::lsetxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            },
+            0
+        );
+    }
+
+    fn get_xattr(path: &Path, name: &str) -> Vec<u8> {
+        let path = c_path(path).unwrap();
+        let name = std::ffi::CString::new(name).unwrap();
+        // SAFETY: test inputs are valid C strings. A null buffer with size 0
+        // requests the attribute value length.
+        let size =
+            unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        assert!(size >= 0);
+        let mut value = vec![0; size as usize];
+        assert_eq!(
+            // SAFETY: `value` is allocated with the exact size returned by
+            // `lgetxattr`, and the C strings live for this call.
+            unsafe {
+                libc::lgetxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            },
+            size
+        );
+        value
     }
 
     fn assert_copy_diverges_after_mutation(source: &Path, clone: &Path) {

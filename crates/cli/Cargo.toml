@@ -8,7 +8,11 @@ license.workspace = true
 name = "rift"
 path = "src/main.rs"
 
+[features]
+fixture-faults = ["rift/fixture-faults"]
+
 [dependencies]
+serde_json.workspace = true
 clap.workspace = true
 rift = { path = "../core" }
 thiserror.workspace = true

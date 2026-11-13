@@ -216,3 +216,10 @@ Results include per-sample timings plus median, minimum, and maximum; `compare` 
 ## License
 
 MIT
+
+### Guarded lifecycle
+
+For exact reviewed canonical-path reconciliation, root/leaf trash, crash recovery,
+finalization, and rollback, use the native `guarded` commands with an explicit
+registry. See [the guarded lifecycle contract](docs/guarded-lifecycle.md), including
+its ownership gate and synthetic verification procedure.

@@ -8,3 +8,6 @@
 /npm/rift-darwin-arm64/bin/
 /npm/rift-windows-x64/bin/
 /npm/rift-snapshot/prebuilds/
+
+# Synthetic Python E2E bytecode
+__pycache__/

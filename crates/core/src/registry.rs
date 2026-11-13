@@ -39,10 +39,14 @@ impl SubtreeScope {
 
 pub(crate) struct Registry {
     database: Connection,
+    _writer_lock: crate::guarded::WriterLock,
 }
 
 impl Registry {
     pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let writer_lock = crate::guarded::WriterLock::acquire(path, true)?;
+        crate::guarded::reject_journal(path)?;
         let database = Connection::open(path)?;
         database.execute_batch(
             "PRAGMA busy_timeout = 2000;
@@ -61,7 +65,10 @@ impl Registry {
                 removed_at INTEGER NOT NULL
               );",
         )?;
-        Ok(Self { database })
+        Ok(Self {
+            database,
+            _writer_lock: writer_lock,
+        })
     }
 
     pub(crate) fn insert_root(&self, id: &RiftId, path: &Path) -> Result<()> {

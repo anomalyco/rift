@@ -82,6 +82,7 @@ impl Failure {
 impl From<Error> for Failure {
     fn from(error: Error) -> Self {
         let (code, path) = match &error {
+            Error::Guarded(_) | Error::GuardedInterrupted { .. } => ("guarded_lifecycle", None),
             Error::Io(_) => ("io", None),
             Error::IoAt { path, .. } => ("io", Some(path.clone())),
             Error::Database(_) => ("database", None),
